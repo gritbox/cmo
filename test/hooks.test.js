@@ -67,7 +67,7 @@ function standardTranscript(proj, firstTs) {
 // ---------------------------------------------------------------- fail-open
 
 test('all scripts exit 0 and stay silent on empty stdin', () => {
-  for (const s of ['session-start.js', 'snapshot.js', 'trim.js']) {
+  for (const s of ['session-start.js', 'snapshot.js', 'trim.js', 'jit-recall.js']) {
     const r = run(s, null);
     assert.equal(r.code, 0, `${s} exit code`);
     assert.equal(r.out, null, `${s} should emit nothing`);
@@ -277,6 +277,28 @@ test('CMO_TRIM_CHARS=0 disables trimming', () => {
   assert.equal(r.out, null);
 });
 
+test('repetitive log payloads are line-deduped with counts instead of excerpted', () => {
+  const proj = tmpProj();
+  const unique = Array.from({ length: 30 }, (_, i) => `INFO starting worker ${i}`);
+  const spam = Array(2000).fill('WARN retry queue full, backing off');
+  const payload = unique.concat(spam).join('\n');
+  assert.ok(payload.length > 30000);
+  const r = run('trim.js', trimInput(proj, payload));
+  const stdout = r.out.hookSpecificOutput.updatedToolOutput.stdout;
+  assert.match(stdout, /WARN retry queue full, backing off {2}\[x2000\]/);
+  assert.match(stdout, /deduplicated/);
+  assert.match(stdout, /INFO starting worker 29/, 'every distinct line survives');
+});
+
+test('mostly-unique payloads skip dedup and fall back to head+tail', () => {
+  const proj = tmpProj();
+  const payload = Array.from({ length: 2000 }, (_, i) => `line ${i} ${'x'.repeat(20)}`).join('\n');
+  const r = run('trim.js', trimInput(proj, payload));
+  const stdout = r.out.hookSpecificOutput.updatedToolOutput.stdout;
+  assert.match(stdout, /middle omitted/);
+  assert.doesNotMatch(stdout, /deduplicated/);
+});
+
 test('spill directory is capped at CMO_SPILL_MAX files', () => {
   const proj = tmpProj();
   for (let i = 0; i < 5; i++) {
@@ -284,4 +306,70 @@ test('spill directory is capped at CMO_SPILL_MAX files', () => {
   }
   const files = fs.readdirSync(memFile(proj, 'spill'));
   assert.ok(files.length <= 3, `expected <=3 spill files, got ${files.length}`);
+});
+
+// ---------------------------------------------------------------- jit-recall
+
+function seedJournal(proj) {
+  fs.mkdirSync(memFile(proj, 'journal'), { recursive: true });
+  fs.writeFileSync(
+    memFile(proj, 'journal', '2026-06.md'),
+    [
+      '---',
+      '### 2026-06-10 09:00 UTC (session aaa)',
+      '- Intent: We need rate limiting. Decided to go with floodgate because sliding windows.',
+      '- Touched: src/floodgate.ts',
+      '---',
+      '### 2026-06-12 09:00 UTC (session bbb)',
+      '- Intent: Pick a logging library. Went with inkwell for structured JSON output.',
+      '- Touched: src/inkwell.ts',
+    ].join('\n') + '\n'
+  );
+}
+
+const jitInput = (proj, prompt, sid) => ({
+  cwd: proj,
+  prompt,
+  session_id: sid || `jit-${Math.random().toString(36).slice(2)}`,
+  hook_event_name: 'UserPromptSubmit',
+});
+
+test('jit-recall surfaces a pointer for prompts matching journal history', () => {
+  const proj = tmpProj();
+  seedJournal(proj);
+  const r = run('jit-recall.js', jitInput(proj, 'why is rate limiting behaving oddly under load?'));
+  const ctx = r.out.hookSpecificOutput.additionalContext;
+  assert.match(ctx, /\[cmo recall hint\]/);
+  assert.match(ctx, /floodgate/);
+});
+
+test('jit-recall stays silent for unrelated prompts', () => {
+  const proj = tmpProj();
+  seedJournal(proj);
+  const r = run('jit-recall.js', jitInput(proj, 'please refactor the checkout page styling for mobile'));
+  assert.equal(r.out, null);
+});
+
+test('jit-recall stays silent for slash commands and short prompts', () => {
+  const proj = tmpProj();
+  seedJournal(proj);
+  assert.equal(run('jit-recall.js', jitInput(proj, '/compact')).out, null);
+  assert.equal(run('jit-recall.js', jitInput(proj, 'ok do it')).out, null);
+});
+
+test('jit-recall never repeats a pointer within a session', () => {
+  const proj = tmpProj();
+  seedJournal(proj);
+  const sid = `jit-dedup-${Date.now()}`;
+  const first = run('jit-recall.js', jitInput(proj, 'rate limiting seems broken again', sid));
+  assert.ok(first.out, 'first prompt gets the pointer');
+  const second = run('jit-recall.js', jitInput(proj, 'still seeing rate limiting failures', sid));
+  assert.equal(second.out, null, 'same pointer suppressed for the rest of the session');
+});
+
+test('jit-recall can be disabled with CMO_JIT=off', () => {
+  const proj = tmpProj();
+  seedJournal(proj);
+  const r = run('jit-recall.js', jitInput(proj, 'rate limiting is failing under load'), { CMO_JIT: 'off' });
+  assert.equal(r.out, null);
 });

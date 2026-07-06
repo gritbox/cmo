@@ -82,17 +82,50 @@ function trimPayload(s, limit, cwd) {
   const spillPath = path.join(spillDir, name);
   if (!fs.existsSync(spillPath)) fs.writeFileSync(spillPath, s);
   pruneSpill(spillDir);
+  const rel = path.relative(cwd, spillPath) || spillPath;
 
+  // Pass 1: repeated-line dedup. Logs and test spam compress dramatically
+  // under exact-line dedup with counts, and unlike head+tail excerpting it
+  // loses no distinct line. If dedup alone gets under the limit, keep the
+  // whole deduplicated payload.
+  const deduped = dedupLines(s);
+  if (deduped && deduped.length <= limit) {
+    const saved = lib.estTokens(s) - lib.estTokens(deduped);
+    return (
+      deduped +
+      `\n\n${MARKER}: ${s.length} chars deduplicated to ${deduped.length} (~${saved} tokens saved); ` +
+      `repeated lines are annotated with [xN]. Exact original preserved at ${rel}.]`
+    );
+  }
+
+  // Pass 2: head + tail excerpt (over the deduped text when that helps).
+  const base = deduped && deduped.length < s.length * 0.7 ? deduped : s;
   const headLen = Math.floor(limit * 0.6);
   const tailLen = Math.floor(limit * 0.15);
-  const rel = path.relative(cwd, spillPath) || spillPath;
-  const saved = lib.estTokens(s) - lib.estTokens(s.slice(0, headLen) + s.slice(-tailLen));
+  const saved = lib.estTokens(s) - lib.estTokens(base.slice(0, headLen) + base.slice(-tailLen));
   return (
-    s.slice(0, headLen) +
+    base.slice(0, headLen) +
     `\n\n${MARKER}: ${s.length} chars total, middle omitted (~${saved} tokens saved). ` +
     `Full output preserved at ${rel} — Read with offset/limit or Grep it if the omitted portion matters.]\n\n` +
-    s.slice(-tailLen)
+    base.slice(-tailLen)
   );
+}
+
+/**
+ * Exact-line dedup preserving first-occurrence order, annotating lines seen
+ * >= 2 times with a count. Returns null when there isn't enough repetition
+ * to be worth the reordering (< 25% shrink) or the payload isn't line-shaped.
+ */
+function dedupLines(s) {
+  const lines = s.split('\n');
+  if (lines.length < 100) return null;
+  const counts = new Map();
+  for (const l of lines) counts.set(l, (counts.get(l) || 0) + 1);
+  if (counts.size > lines.length * 0.75) return null; // mostly unique — dedup won't pay
+  const out = [];
+  for (const [l, c] of counts) out.push(c >= 2 ? `${l}  [x${c}]` : l);
+  const joined = out.join('\n');
+  return joined.length <= s.length * 0.75 ? joined : null;
 }
 
 /** Deterministic guardrail on our own files only: cap the spill dir size. */

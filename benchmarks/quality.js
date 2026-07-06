@@ -147,6 +147,42 @@ const paraphrase = score(
 let falsePositives = 0;
 for (const q of NEGATIVE_QUERIES) if (grepMemory(proj, q).length) falsePositives++;
 
+// ---------------------------------------------------------------- jit hook
+
+// End-to-end through the real jit-recall.js hook: a user prompt mentioning a
+// seeded topic should produce a pointer naming the choice; unrelated prompts
+// must stay silent.
+function runJit(prompt) {
+  const r = spawnSync('node', [path.join(SCRIPTS, 'jit-recall.js')], {
+    input: JSON.stringify({
+      cwd: proj,
+      prompt,
+      session_id: 'jitq-' + Math.random().toString(36).slice(2),
+      hook_event_name: 'UserPromptSubmit',
+    }),
+    encoding: 'utf8',
+  });
+  try {
+    return JSON.parse(r.stdout).hookSpecificOutput.additionalContext;
+  } catch {
+    return null;
+  }
+}
+
+let jitHits = 0;
+let jitTokens = 0;
+for (const f of FACTS) {
+  const ctx = runJit(`Something looks off with our ${f.topic} — can you investigate?`);
+  if (ctx) jitTokens += est(ctx);
+  if (ctx && ctx.toLowerCase().includes(f.choice.toLowerCase())) jitHits++;
+}
+let jitFalseFires = 0;
+for (const q of NEGATIVE_QUERIES) {
+  if (runJit(`Something looks off with our ${q} — can you investigate?`)) jitFalseFires++;
+}
+const jitRecall = jitHits / FACTS.length;
+const jitAvgTokens = Math.round(jitTokens / Math.max(jitHits, 1));
+
 const journalDir = path.join(proj, '.claude', 'memory', 'journal');
 const journalTokens = fs
   .readdirSync(journalDir)
@@ -159,15 +195,17 @@ console.log(`| Direct (names the choice) | \`floodgate\` | ${pct(direct.recall)}
 console.log(`| Topical (names the domain) | \`rate limiting\` | ${pct(topical.recall)} | ${topical.avgTokens} |`);
 console.log(`| Paraphrase (synonyms only) | \`throttling requests\` | ${pct(paraphrase.recall)} | ${paraphrase.avgTokens} |`);
 console.log(`| Negative (never stored) | \`service mesh sidecar\` | ${falsePositives}/${NEGATIVE_QUERIES.length} false positives | — |`);
+console.log(`| JIT pointer (real UserPromptSubmit hook) | "something looks off with our rate limiting" | ${pct(jitRecall)} | ${jitAvgTokens} |`);
+console.log(`| JIT on never-stored topics | — | ${jitFalseFires}/${NEGATIVE_QUERIES.length} false fires | — |`);
 console.log(`\nTotal journal size after 20 sessions: ${journalTokens} tokens (retrieved lazily, never resident).`);
 console.log('\nParaphrase misses are the expected cost of keyword-only retrieval —');
-console.log('tracked here so the trade-off stays measured. Mitigation on the roadmap:');
-console.log('deterministic just-in-time pointers on UserPromptSubmit.');
+console.log('tracked here so the trade-off stays measured. The jit-recall hook covers');
+console.log('the "model never looked" gap for on-topic prompts at ~zero resident cost.');
 console.log(`\n(scratch project: ${proj})`);
 
 // Non-zero exit if the pipeline regresses on what it MUST do.
-if (direct.recall < 1 || topical.recall < 0.9 || falsePositives > 0) {
-  console.error('\nQUALITY REGRESSION: direct/topical recall or false-positive guarantee failed.');
+if (direct.recall < 1 || topical.recall < 0.9 || falsePositives > 0 || jitRecall < 0.85 || jitFalseFires > 0) {
+  console.error('\nQUALITY REGRESSION: recall, JIT pointer, or false-positive guarantee failed.');
   process.exit(1);
 }
 

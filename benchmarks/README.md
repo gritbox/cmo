@@ -74,8 +74,18 @@ format), then scores keyword retrieval:
 |---|---|---|
 | Direct (names the choice) | **100%** | gated in CI — regression fails the build |
 | Topical (names the domain) | **100%** | gated in CI (≥90%) |
-| Paraphrase (synonyms never recorded) | 0% | the known keyword-search trade-off, kept measured; mitigation planned via UserPromptSubmit pointers |
+| Paraphrase (synonyms never recorded) | 0% | the known keyword-search trade-off, kept measured; partially mitigated by the JIT pointer hook below |
 | Negative (never stored) | **0 false positives** | gated in CI |
+| JIT pointer (real `jit-recall.js` hook, on-topic prompts) | **90%** | gated in CI (≥85%) |
+| JIT on never-stored topics | **0 false fires** | gated in CI |
+
+The JIT hook deliberately requires ≥2 distinct prompt terms to co-occur in a
+journal line. A single-rare-term rule was tried first and rejected: this very
+benchmark caught it false-firing on incidental word overlap ("wasm plugin
+sandbox" surfacing an email-sandbox memory). Precision wins for unsolicited
+pointers — a missed pointer costs nothing, a wrong one erodes trust in all of
+them. The two misses in the 90% are single-distinctive-word topics
+("logging"), which fall below the two-term bar by design.
 
 This harness already earned its keep: its first run exposed a session-id
 prefix collision in journal dedup that silently dropped 9 of 20 sessions

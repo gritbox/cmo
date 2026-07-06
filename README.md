@@ -17,7 +17,8 @@ teardown and the design principles derived from it.
 | Before compaction | `PreCompact` hook | Deterministically snapshots working state (intent, todos, edited files, recent commands) from the transcript to `.claude/memory/handoff.md` |
 | After compaction | `SessionStart(source=compact)` hook | Re-injects only the handoff, so compaction never loses the thread |
 | Session end | `SessionEnd` hook | Appends a deduplicated digest to an append-only monthly journal |
-| Oversized tool output | `PostToolUse` hook (`updatedToolOutput`) | Output > 30k chars is replaced in context with head + tail + pointer; the **full payload is preserved** in `.claude/memory/spill/` and recoverable via `Read`/`Grep` |
+| Oversized tool output | `PostToolUse` hook (`updatedToolOutput`) | Output > 30k chars is first **line-deduplicated with counts** (`[xN]` — logs and test spam compress dramatically, losing no distinct line), then head/tail-excerpted if still over; the **full payload is preserved** in `.claude/memory/spill/` and recoverable via `Read`/`Grep` |
+| Every user prompt | `UserPromptSubmit` hook | Just-in-time recall: when a prompt's distinctive terms match journal history (≥2 co-occurring terms — precision-first), injects a ≤100-token pointer to the matching lines; never repeats a pointer within a session |
 | Retrieval | `/cmo:recall` skill (model- and user-invocable) | Tiered lazy search: index → handoff → `Grep` the journal → `Grep` spill files |
 | Durable facts | `/cmo:remember` skill | Curates `decisions.md`/`index.md` with supersede-in-place and a line budget |
 
@@ -47,6 +48,8 @@ Or for local development: clone, then `claude --plugin-dir /path/to/cmo`.
 | `CMO_STALE_HOURS` | `48` | Handoff older than this is injected with an explicit STALE label |
 | `CMO_STALE_DROP_DAYS` | `14` | Handoff older than this collapses to a one-line pointer |
 | `CMO_SPILL_MAX` | `50` | Maximum spill files kept (oldest pruned first) |
+| `CMO_JIT` | on | Set to `off` to disable just-in-time recall pointers |
+| `CMO_JIT_BUDGET_TOKENS` | `100` | Hard cap on a just-in-time pointer |
 
 Staleness gating exists because a weeks-old "working state" presented as
 current is memory poisoning, not memory. Snapshots also capture **git commits
@@ -89,8 +92,10 @@ mempalace 3.5.0 via its wheel's `TOOLS` registry):
 
 And on quality (`node benchmarks/quality.js`, 20 seeded decisions replayed
 through the real hooks): **100% direct recall, 100% topical recall, 0 false
-positives**, paraphrase recall 0% (the keyword-search trade-off, kept
-measured and gated in CI rather than hand-waved).
+positives**; the just-in-time pointer hook surfaces relevant history on **90%
+of on-topic prompts with 0 false fires**; paraphrase recall 0% (the
+keyword-search trade-off, kept measured and gated in CI rather than
+hand-waved).
 
 Why, structurally:
 
@@ -131,7 +136,8 @@ modes. That trade-off is argued in [ANALYSIS.md](ANALYSIS.md).
 hooks/hooks.json               lifecycle wiring
 scripts/session-start.js       budgeted injection
 scripts/snapshot.js            PreCompact/SessionEnd state capture
-scripts/trim.js                reversible output trimming
+scripts/trim.js                reversible output trimming (dedup + excerpt)
+scripts/jit-recall.js          just-in-time recall pointers
 scripts/lib.js                 shared helpers (stdin, transcript parsing)
 skills/recall/SKILL.md         tiered retrieval (/cmo:recall)
 skills/remember/SKILL.md       durable-fact curation (/cmo:remember)
@@ -142,8 +148,9 @@ test/hooks.test.js             hook test suite (`node --test`)
 ## Development
 
 ```
-node --test                # run the test suite (18 tests, no dependencies)
-node benchmarks/bench.js   # run the benchmark harness
+node --test                  # run the test suite (25 tests, no dependencies)
+node benchmarks/bench.js     # token-overhead harness
+node benchmarks/quality.js   # recall-quality gate (non-zero exit on regression)
 ```
 
 CI runs both on Linux, macOS, and Windows against Node 18 and 22.
