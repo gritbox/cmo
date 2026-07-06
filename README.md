@@ -74,15 +74,23 @@ Hook latency:               snapshot ~57ms · session-start ~45ms · trim ~44ms
 ```
 
 Lifetime overhead a memory system adds to a 100-session × 40-turn project
-(conversation history itself is identical everywhere and excluded):
+(conversation history itself is identical everywhere and excluded).
+Competitor resident payloads are **measured from their shipped packages**
+(claude-mem@13.10.2 via a live `tools/list` query against its MCP server;
+mempalace 3.5.0 via its wheel's `TOOLS` registry):
 
 | System | Resident tokens/session (startup + tool schemas) | Context tokens added (lifetime) | Background API tokens (lifetime) | Total overhead |
 |---|---|---|---|---|
-| claude-mem (published claims) | 1,860 | 7,590,000 | 6,000,000 | 13,590,000 |
-| MemPalace (published claims) | 2,450 | 10,160,000 | 0 | 10,160,000 |
+| claude-mem (measured pkg + published claims) | 5,386 | 21,694,000 | 6,000,000 | 27,694,000 |
+| MemPalace (measured pkg + published claims) | 6,849 | 27,756,000 | 0 | 27,756,000 |
 | **CMO (measured)** | **495** | **2,040,000** | **0** | **2,040,000** |
 
-**~85% lower total overhead than claude-mem, ~80% lower than MemPalace.**
+**~93% lower total overhead than both.**
+
+And on quality (`node benchmarks/quality.js`, 20 seeded decisions replayed
+through the real hooks): **100% direct recall, 100% topical recall, 0 false
+positives**, paraphrase recall 0% (the keyword-search trade-off, kept
+measured and gated in CI rather than hand-waved).
 
 Why, structurally:
 
@@ -90,10 +98,13 @@ Why, structurally:
    output through a background Agent SDK compression call. That's the largest
    single line item in its column above, and it's invisible in context-window
    accounting.
-2. **Zero MCP tool-schema tax.** MemPalace's "170-token startup" is real but
-   omits its 19 MCP tool schemas resident in context every turn. CMO uses no
-   MCP server; retrieval is native `Grep`/`Read` plus two skill descriptions
-   (~80 tokens).
+2. **Zero MCP tool-schema tax.** MemPalace's "170-token startup" claim is
+   real but omits the **35 MCP tools** its v3.5.0 server registers — a
+   measured ~6,679 tokens of schemas resident in context every turn (~40× the
+   headline number). claude-mem's server returns 19 tools (~2,766 tokens)
+   plus ~1,120 tokens of bundled skill descriptions. CMO uses no MCP server;
+   retrieval is native `Grep`/`Read` plus two skill descriptions (~80
+   tokens).
 3. **A cap, not an average.** claude-mem's injected index grows with history.
    CMO's injection is truncated at a configurable hard budget, every session.
 4. **Lossless trimming with no infrastructure.** The headroom-style

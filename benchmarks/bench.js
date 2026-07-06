@@ -113,21 +113,26 @@ function part2(m) {
   const rawToolOutTokens = 1500; // avg raw tool payload per turn (drives trim + claude-mem worker)
 
   // toolSchemas: MCP tool definitions (or skill descriptions) resident in
-  // context every turn — the overhead both marketing pages omit. Estimated at
-  // ~120 tokens per MCP tool schema; skill descriptions measured directly.
+  // context every turn — the overhead both marketing pages omit. MEASURED
+  // from the shipped packages (see benchmarks/README.md for method):
+  //  - claude-mem@13.10.2: its MCP server's live tools/list response is 19
+  //    tools, 2,766 tokens serialized; plus 17 bundled skills whose
+  //    model-invocable descriptions total ~1,120 tokens.
+  //  - mempalace 3.5.0 wheel: TOOLS registry defines 35 tools; the
+  //    serialized definitions total ~6,679 tokens.
   const frameworks = {
-    'claude-mem (published claims)': {
-      startup: 1500,       // injected index: summaries + observation titles
-      toolSchemas: 3 * 120, // search / timeline / get_observations MCP tools
-      retrievalPerUse: 750, // 3-layer MCP flow, mid-range of 500–1000/result
+    'claude-mem (measured pkg + published claims)': {
+      startup: 1500,           // injected index: summaries + observation titles (claim-based; grows with history)
+      toolSchemas: 2766 + 1120, // MEASURED: tools/list + skill descriptions
+      retrievalPerUse: 750,     // 3-layer MCP flow, mid-range of 500–1000/result
       retrievalRate: 0.1,
       // Every tool call's raw output is shipped to a background Agent SDK
       // call for compression — background input tokens ≈ raw payload.
       backgroundPerTurn: rawToolOutTokens,
     },
-    'MemPalace (published claims)': {
-      startup: 170,          // L0+L1 AAAK payload
-      toolSchemas: 19 * 120, // "auto-discovers 19 MCP tools"
+    'MemPalace (measured pkg + published claims)': {
+      startup: 170,      // L0+L1 AAAK payload (their headline claim)
+      toolSchemas: 6679, // MEASURED: 35 tools in the v3.5.0 TOOLS registry
       retrievalPerUse: 900,
       retrievalRate: 0.2,
       backgroundPerTurn: 0,

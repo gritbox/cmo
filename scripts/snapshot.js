@@ -86,8 +86,10 @@ lib.failOpen(() => {
     const journalDir = path.join(dir, 'journal');
     lib.ensureDir(journalDir);
     const file = path.join(journalDir, now.toISOString().slice(0, 7) + '.md');
+    // Dedup on the full session id — a truncated prefix can collide and
+    // silently drop sessions from the journal.
     const sid = input.session_id || 'unknown-session';
-    const sidTag = `session ${sid.slice(0, 8)}`;
+    const sidTag = `session ${sid}`;
     const existing = lib.readIfExists(file, 1024 * 1024);
     if (!existing.includes(sidTag)) {
       // Journal entries are terser than the handoff: intent, files, todos left open.
