@@ -1,0 +1,89 @@
+'use strict';
+// PreCompact + SessionEnd hook: deterministic working-state capture.
+//
+// Reads the transcript path Claude Code hands over on stdin (we never scan or
+// mutate ~/.claude/projects/ ourselves) and extracts — with zero LLM calls —
+// the session's intents (user messages), todo state, edited files, and recent
+// commands. Writes:
+//   .claude/memory/handoff.md          (overwritten; restored at SessionStart)
+//   .claude/memory/journal/YYYY-MM.md  (append-only digest, SessionEnd only)
+
+const fs = require('fs');
+const path = require('path');
+const { execSync } = require('child_process');
+const lib = require('./lib');
+
+lib.failOpen(() => {
+  const input = lib.readHookInput();
+  const cwd = input.cwd || process.cwd();
+  if (!input.transcript_path) process.exit(0);
+
+  const parsed = lib.parseTranscript(input.transcript_path);
+  const state = lib.extractState(parsed, cwd);
+
+  // Trivial sessions (nothing edited, barely any conversation) leave no trace.
+  if (!state.filesEdited.length && parsed.userTexts.length < 2 && !state.todos.length) {
+    process.exit(0);
+  }
+
+  let branch = '';
+  try {
+    branch = execSync('git rev-parse --abbrev-ref HEAD', {
+      cwd,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 3000,
+    })
+      .toString()
+      .trim();
+  } catch {
+    /* not a git repo */
+  }
+
+  const now = new Date();
+  const stamp = now.toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
+  const event = input.hook_event_name || 'unknown';
+  const lines = [];
+  lines.push(`_${stamp} · ${event}${branch ? ` · branch \`${branch}\`` : ''}_`);
+  if (state.intents.length) {
+    lines.push('', '**Working on:**');
+    for (const t of state.intents) lines.push(`- ${t}`);
+  }
+  if (state.todos.length) {
+    lines.push('', '**Todos at snapshot:**');
+    for (const t of state.todos) lines.push(`- ${t}`);
+  }
+  if (state.filesEdited.length) {
+    lines.push('', '**Files modified:** ' + state.filesEdited.join(', '));
+  }
+  if (state.commands.length) {
+    lines.push('', '**Recent commands:**');
+    for (const c of state.commands) lines.push(`- \`${c}\``);
+  }
+  const digest = lines.join('\n');
+
+  const dir = lib.memoryDir(cwd);
+  lib.ensureDir(dir);
+  fs.writeFileSync(path.join(dir, 'handoff.md'), digest + '\n');
+
+  if (event === 'SessionEnd') {
+    const journalDir = path.join(dir, 'journal');
+    lib.ensureDir(journalDir);
+    const file = path.join(journalDir, now.toISOString().slice(0, 7) + '.md');
+    const sid = input.session_id || 'unknown-session';
+    const sidTag = `session ${sid.slice(0, 8)}`;
+    const existing = lib.readIfExists(file, 1024 * 1024);
+    if (!existing.includes(sidTag)) {
+      // Journal entries are terser than the handoff: intent, files, todos left open.
+      const open = state.todos.filter((t) => !t.startsWith('[completed]'));
+      const entry = [
+        `\n---\n### ${stamp} (${sidTag})${branch ? ` on \`${branch}\`` : ''}`,
+        state.intents.length ? `- Intent: ${state.intents[0]}` : null,
+        state.filesEdited.length ? `- Touched: ${state.filesEdited.join(', ')}` : null,
+        open.length ? `- Left open: ${open.join('; ')}` : null,
+      ]
+        .filter(Boolean)
+        .join('\n');
+      fs.appendFileSync(file, entry + '\n');
+    }
+  }
+});

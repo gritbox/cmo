@@ -1,0 +1,13 @@
+{
+  "name": "cmo",
+  "owner": {
+    "name": "gritbox"
+  },
+  "plugins": [
+    {
+      "name": "cmo",
+      "source": "./",
+      "description": "Context & Memory Optimizer — deterministic, zero-API-cost cross-session memory for Claude Code."
+    }
+  ]
+}
