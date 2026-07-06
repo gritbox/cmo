@@ -44,6 +44,14 @@ Or for local development: clone, then `claude --plugin-dir /path/to/cmo`.
 |---|---|---|
 | `CMO_BUDGET_TOKENS` | `800` | Hard cap on SessionStart injection |
 | `CMO_TRIM_CHARS` | `30000` | Tool-output size that triggers trimming (`0` disables) |
+| `CMO_STALE_HOURS` | `48` | Handoff older than this is injected with an explicit STALE label |
+| `CMO_STALE_DROP_DAYS` | `14` | Handoff older than this collapses to a one-line pointer |
+| `CMO_SPILL_MAX` | `50` | Maximum spill files kept (oldest pruned first) |
+
+Staleness gating exists because a weeks-old "working state" presented as
+current is memory poisoning, not memory. Snapshots also capture **git commits
+made during the session** (scoped by the transcript's first timestamp) — the
+highest-signal deterministic record of what actually happened.
 
 If you don't want memory in version control, add `.claude/memory/` to
 `.gitignore`; at minimum ignore the spill cache (see this repo's
@@ -117,4 +125,14 @@ scripts/lib.js                 shared helpers (stdin, transcript parsing)
 skills/recall/SKILL.md         tiered retrieval (/cmo:recall)
 skills/remember/SKILL.md       durable-fact curation (/cmo:remember)
 benchmarks/bench.js            measurement harness + overhead model
+test/hooks.test.js             hook test suite (`node --test`)
 ```
+
+## Development
+
+```
+node --test                # run the test suite (18 tests, no dependencies)
+node benchmarks/bench.js   # run the benchmark harness
+```
+
+CI runs both on Linux, macOS, and Windows against Node 18 and 22.

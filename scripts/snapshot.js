@@ -10,7 +10,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
 const lib = require('./lib');
 
 lib.failOpen(() => {
@@ -27,14 +27,27 @@ lib.failOpen(() => {
   }
 
   let branch = '';
+  let commits = [];
+  const gitOpts = { cwd, stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 };
   try {
-    branch = execSync('git rev-parse --abbrev-ref HEAD', {
-      cwd,
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 3000,
-    })
-      .toString()
-      .trim();
+    branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], gitOpts).toString().trim();
+    // Commits made during this session are the highest-signal deterministic
+    // record of what happened — human-curated summaries, captured for free.
+    if (parsed.firstTimestamp) {
+      try {
+        commits = execFileSync(
+          'git',
+          ['log', '--oneline', '--no-decorate', '-n', '10', '--since', parsed.firstTimestamp],
+          gitOpts
+        )
+          .toString()
+          .trim()
+          .split('\n')
+          .filter(Boolean);
+      } catch {
+        /* log can fail on an unborn branch */
+      }
+    }
   } catch {
     /* not a git repo */
   }
@@ -54,6 +67,10 @@ lib.failOpen(() => {
   }
   if (state.filesEdited.length) {
     lines.push('', '**Files modified:** ' + state.filesEdited.join(', '));
+  }
+  if (commits.length) {
+    lines.push('', '**Commits this session:**');
+    for (const c of commits) lines.push(`- ${lib.oneLine(c, 100)}`);
   }
   if (state.commands.length) {
     lines.push('', '**Recent commands:**');
@@ -78,6 +95,7 @@ lib.failOpen(() => {
       const entry = [
         `\n---\n### ${stamp} (${sidTag})${branch ? ` on \`${branch}\`` : ''}`,
         state.intents.length ? `- Intent: ${state.intents[0]}` : null,
+        commits.length ? `- Commits: ${commits.map((c) => lib.oneLine(c, 80)).join('; ')}` : null,
         state.filesEdited.length ? `- Touched: ${state.filesEdited.join(', ')}` : null,
         open.length ? `- Left open: ${open.join('; ')}` : null,
       ]

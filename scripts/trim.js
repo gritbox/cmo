@@ -15,7 +15,7 @@ const path = require('path');
 const lib = require('./lib');
 
 const MARKER = '[cmo: output trimmed';
-const SPILL_MAX_FILES = 50;
+const SPILL_MAX_FILES = parseInt(process.env.CMO_SPILL_MAX, 10) || 50;
 
 lib.failOpen(() => {
   const limit = process.env.CMO_TRIM_CHARS === undefined

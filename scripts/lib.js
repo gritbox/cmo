@@ -43,10 +43,12 @@ function readIfExists(p, maxBytes = 256 * 1024) {
 
 /**
  * Parse a Claude Code transcript JSONL defensively. Unknown lines are skipped.
- * Returns { userTexts, toolUses } where toolUses = [{ name, input }].
+ * Returns { userTexts, toolUses, firstTimestamp } where toolUses = [{ name, input }]
+ * and firstTimestamp is the earliest entry timestamp (ISO string) if present —
+ * used to scope git-log capture to the session window.
  */
 function parseTranscript(transcriptPath) {
-  const out = { userTexts: [], toolUses: [] };
+  const out = { userTexts: [], toolUses: [], firstTimestamp: null };
   let raw = '';
   try {
     raw = fs.readFileSync(transcriptPath, 'utf8');
@@ -60,6 +62,9 @@ function parseTranscript(transcriptPath) {
       entry = JSON.parse(line);
     } catch {
       continue;
+    }
+    if (!out.firstTimestamp && entry && typeof entry.timestamp === 'string') {
+      out.firstTimestamp = entry.timestamp;
     }
     const msg = entry && entry.message;
     if (!msg || !msg.role) continue;
