@@ -7,10 +7,43 @@ const crypto = require('crypto');
 /** Read and parse the hook payload Claude Code sends on stdin. */
 function readHookInput() {
   try {
-    return JSON.parse(fs.readFileSync(0, 'utf8') || '{}');
+    return JSON.parse(readStdin() || '{}');
   } catch {
     return {};
   }
+}
+
+/**
+ * Read all of stdin synchronously. A plain fs.readFileSync(0) throws EAGAIN
+ * on macOS when the pipe is non-blocking and momentarily empty mid-stream —
+ * which happens precisely on payloads larger than the 64 KB pipe buffer,
+ * i.e. exactly the oversized tool outputs trim.js exists to handle. (Found
+ * because CI's macOS lane failed on every large-stdin test while the
+ * fail-open wrapper hid the same silent no-op in production.) Retry EAGAIN
+ * with a short sleep, bounded by a deadline so a hook can never hang a
+ * session.
+ */
+function readStdin(deadlineMs = 10000) {
+  const chunks = [];
+  const buf = Buffer.alloc(65536);
+  const deadline = Date.now() + deadlineMs;
+  while (true) {
+    let n;
+    try {
+      n = fs.readSync(0, buf, 0, buf.length, null);
+    } catch (e) {
+      if (e.code === 'EAGAIN' && Date.now() < deadline) {
+        // ~5 ms synchronous sleep; the writer is mid-stream.
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+        continue;
+      }
+      if (e.code === 'EOF') break; // Windows closed-pipe convention
+      break; // unknown error or deadline: fail open with what we have
+    }
+    if (n === 0) break;
+    chunks.push(Buffer.from(buf.subarray(0, n)));
+  }
+  return Buffer.concat(chunks).toString('utf8');
 }
 
 /** Rough token estimate (4 chars/token) — used only for budgeting, never billing. */
