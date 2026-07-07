@@ -350,8 +350,34 @@ function lineStemSet(lineLow) {
 
 /** Emit hook JSON and exit successfully. */
 function emit(obj) {
-  process.stdout.write(JSON.stringify(obj));
+  writeStdoutSync(JSON.stringify(obj));
   process.exit(0);
+}
+
+/**
+ * Write to stdout fully-synchronously before exiting. process.stdout.write +
+ * process.exit truncates on macOS when a payload larger than the pipe buffer
+ * only partially completes — the queued remainder is discarded at exit
+ * (nodejs/node#6456 family). That silently corrupted every large hook
+ * emission on macOS: exactly trim.js's updatedToolOutput, whose whole job is
+ * large payloads. Same shape as readStdin: retry EAGAIN with a short sleep,
+ * bounded so a hook can never hang a session.
+ */
+function writeStdoutSync(s, deadlineMs = 10000) {
+  const buf = Buffer.from(s, 'utf8');
+  let off = 0;
+  const deadline = Date.now() + deadlineMs;
+  while (off < buf.length) {
+    try {
+      off += fs.writeSync(1, buf, off, buf.length - off);
+    } catch (e) {
+      if (e.code === 'EAGAIN' && Date.now() < deadline) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+        continue;
+      }
+      break; // fail open with a partial write rather than hang
+    }
+  }
 }
 
 /** Hooks must never break a session: run fn, exit 0 silently on any failure. */
