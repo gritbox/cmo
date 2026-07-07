@@ -27,5 +27,16 @@ conversation and state what you are saving before saving it.
 5. If the fact is core orientation (what the project is, key entry points,
    invariants), put it in `.claude/memory/index.md` instead of
    `decisions.md` — same conciseness rules.
+6. **Glossary (recall insurance).** Future sessions search memory by keyword,
+   so a fact filed under one name is invisible to a query that uses a
+   synonym. If the fact introduces a name or term of art (a library, a
+   subsystem, project jargon), append one line to
+   `.claude/memory/glossary.md`:
+   `- <term>: <2–4 aliases someone might search for instead>`
+   e.g. `- neonhttp: http client, fetch wrapper, retries`. Write the aliases
+   now, while you know what the term means — recall-time can only expand
+   what remember-time recorded. Keep heads unique; if the term already has a
+   line, extend its aliases instead of adding a duplicate. Domain-scoped
+   meanings belong here too (`- container: docker` in a deployment project).
 
 Confirm to the user in one line what was written and where.

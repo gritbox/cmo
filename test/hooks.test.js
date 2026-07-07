@@ -373,3 +373,104 @@ test('jit-recall can be disabled with CMO_JIT=off', () => {
   const r = run('jit-recall.js', jitInput(proj, 'rate limiting is failing under load'), { CMO_JIT: 'off' });
   assert.equal(r.out, null);
 });
+
+// ------------------------------------------ glossary + expansion + vagueness
+
+function seedGlossary(proj) {
+  fs.mkdirSync(memFile(proj), { recursive: true });
+  fs.writeFileSync(
+    memFile(proj, 'glossary.md'),
+    '# Glossary\n- floodgate: rate limiting, throttling, request limits\n'
+  );
+}
+
+test('jit-recall matches paraphrases through glossary aliases', () => {
+  const proj = tmpProj();
+  seedJournal(proj);
+  seedGlossary(proj);
+  // "throttling" never appears in the journal — only via the glossary.
+  const r = run('jit-recall.js', jitInput(proj, 'the request throttling seems too aggressive lately'));
+  const ctx = r.out.hookSpecificOutput.additionalContext;
+  assert.match(ctx, /floodgate/);
+});
+
+test('glossary expansion counts one concept once — no self-inflated match', () => {
+  const proj = tmpProj();
+  seedJournal(proj);
+  seedGlossary(proj);
+  // An off-topic prompt sharing zero concepts must stay silent even though
+  // the glossary knows many surface forms for floodgate.
+  const r = run('jit-recall.js', jitInput(proj, 'rewrite the marketing landing page hero copy'));
+  assert.equal(r.out, null);
+});
+
+test('stemming bridges morphological variants (retry vs retries)', () => {
+  const proj = tmpProj();
+  fs.mkdirSync(memFile(proj, 'journal'), { recursive: true });
+  fs.writeFileSync(
+    memFile(proj, 'journal', '2026-06.md'),
+    '### 2026-06-01 (session ccc)\n- Intent: webhook retry backoff uses exponential delays.\n'
+  );
+  const r = run('jit-recall.js', jitInput(proj, 'why are webhook retries so slow lately?'));
+  assert.match(r.out.hookSpecificOutput.additionalContext, /retry backoff/);
+});
+
+test('vague affirmation resolves its referent from the previous assistant turn', () => {
+  const proj = tmpProj();
+  seedJournal(proj);
+  const transcript = writeTranscript(proj, [
+    userMsg('hm, where did we land on that?'),
+    {
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'Past sessions covered the rate limiting rollout with floodgate — want me to pull that decision up?' },
+        ],
+      },
+    },
+  ]);
+  const r = run('jit-recall.js', { ...jitInput(proj, 'sure. go ahead.'), transcript_path: transcript });
+  assert.match(r.out.hookSpecificOutput.additionalContext, /floodgate/);
+});
+
+test('vague affirmation without a transcript stays silent', () => {
+  const proj = tmpProj();
+  seedJournal(proj);
+  assert.equal(run('jit-recall.js', jitInput(proj, 'sure, go ahead!')).out, null);
+});
+
+// ---------------------------------------------------------------- search.js
+
+function runSearch(proj, ...args) {
+  const res = spawnSync('node', [path.join(SCRIPTS, 'search.js'), '--cwd', proj, ...args], {
+    encoding: 'utf8',
+  });
+  return res.stdout.split('\n').filter(Boolean);
+}
+
+test('search.js ranks multi-concept matches first and finds glossary paraphrases', () => {
+  const proj = tmpProj();
+  seedJournal(proj);
+  seedGlossary(proj);
+  const hits = runSearch(proj, '--top', '3', 'throttling requests');
+  assert.ok(hits.length >= 1, 'paraphrase should match via glossary');
+  assert.match(hits[0], /floodgate|rate limiting/);
+});
+
+test('search.js labels single-incidental-word matches as weak', () => {
+  const proj = tmpProj();
+  seedJournal(proj);
+  // Only "logging" overlaps; "kafka consumer" does not — the hit must carry
+  // the [weak: …] label so consumers can discount it.
+  const hits = runSearch(proj, 'kafka consumer logging offsets');
+  assert.ok(hits.every((h) => !h.includes('inkwell') || h.includes('[weak:')));
+});
+
+test('search.js is silent (exit 0) when memory does not exist', () => {
+  const proj = tmpProj();
+  const res = spawnSync('node', [path.join(SCRIPTS, 'search.js'), '--cwd', proj, 'anything'], {
+    encoding: 'utf8',
+  });
+  assert.equal(res.status, 0);
+  assert.equal(res.stdout, '');
+});
