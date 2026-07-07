@@ -2,7 +2,7 @@
 // PostToolUse hook: reversible trimming of oversized tool outputs.
 //
 // If a tool result exceeds CMO_TRIM_CHARS (default 30000 chars ≈ 7.5k tokens),
-// the full payload is spilled to .claude/memory/spill/<sha12>.txt and the
+// the full payload is spilled to .cmo/spill/<sha12>.txt and the
 // in-context result is replaced (via hookSpecificOutput.updatedToolOutput)
 // with head + tail excerpts plus a pointer. The model can Read/Grep the spill
 // file to recover any part — the trim is lossless on disk, cheap in context.
@@ -28,42 +28,14 @@ lib.failOpen(() => {
   const resp = input.tool_response !== undefined ? input.tool_response : input.tool_output;
   if (resp === undefined || resp === null) process.exit(0);
 
-  let changed = false;
-  let updated;
+  // Depth-limited walk over the whole response: oversized strings live at
+  // different depths per tool (Bash: top-level stdout/stderr; Read:
+  // tool_response.file.content; MCP-style: [{type:"text",text}] blocks), so
+  // no shallow scan or schema assumption covers them all. Returns null when
+  // nothing was trimmed.
+  const updated = trimDeep(resp, limit, cwd, 0);
 
-  if (typeof resp === 'string') {
-    const t = trimPayload(resp, limit, cwd);
-    if (t) {
-      updated = t;
-      changed = true;
-    }
-  } else if (Array.isArray(resp)) {
-    updated = resp.map((block) => {
-      if (block && block.type === 'text' && typeof block.text === 'string') {
-        const t = trimPayload(block.text, limit, cwd);
-        if (t) {
-          changed = true;
-          return { ...block, text: t };
-        }
-      }
-      return block;
-    });
-  } else if (typeof resp === 'object') {
-    // Shallow walk: replace any oversized string field (covers Bash's
-    // {stdout, stderr}, Read's file content, etc.) without assuming a schema.
-    updated = { ...resp };
-    for (const [k, v] of Object.entries(updated)) {
-      if (typeof v === 'string') {
-        const t = trimPayload(v, limit, cwd);
-        if (t) {
-          updated[k] = t;
-          changed = true;
-        }
-      }
-    }
-  }
-
-  if (!changed) process.exit(0);
+  if (updated === null) process.exit(0);
   lib.emit({
     hookSpecificOutput: {
       hookEventName: 'PostToolUse',
@@ -71,6 +43,40 @@ lib.failOpen(() => {
     },
   });
 });
+
+/**
+ * Recursively trim any oversized string inside a tool response, preserving
+ * the surrounding structure. Returns the replacement value, or null if the
+ * subtree is unchanged. Depth-capped so a pathological payload can't recurse
+ * away the hook's time budget.
+ */
+function trimDeep(node, limit, cwd, depth) {
+  if (node === null || node === undefined || depth > 4) return null;
+  if (typeof node === 'string') return trimPayload(node, limit, cwd);
+  if (Array.isArray(node)) {
+    let changed = false;
+    const out = node.map((v) => {
+      const t = trimDeep(v, limit, cwd, depth + 1);
+      if (t === null) return v;
+      changed = true;
+      return t;
+    });
+    return changed ? out : null;
+  }
+  if (typeof node === 'object') {
+    let changed = false;
+    const out = { ...node };
+    for (const [k, v] of Object.entries(out)) {
+      const t = trimDeep(v, limit, cwd, depth + 1);
+      if (t !== null) {
+        out[k] = t;
+        changed = true;
+      }
+    }
+    return changed ? out : null;
+  }
+  return null;
+}
 
 /** Returns the trimmed replacement string, or null if no trim applies. */
 function trimPayload(s, limit, cwd) {

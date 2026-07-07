@@ -15,19 +15,28 @@ CMO's design is derived from measured facts about the `claude-mem` and
 | Lifecycle point | Mechanism | Effect |
 |---|---|---|
 | Session start / resume / clear | `SessionStart` hook | Injects a **hard-budgeted** memory slice (default ≤ 800 tokens, truncated at the cap): last working state, durable decisions, curated index |
-| Before compaction | `PreCompact` hook | Deterministically snapshots working state (intent, todos, edited files, recent commands) from the transcript to `.claude/memory/handoff.md` |
+| Before compaction | `PreCompact` hook | Deterministically snapshots working state (intent, todos, edited files, recent commands) from the transcript to `.cmo/handoff.md` |
 | After compaction | `SessionStart(source=compact)` hook | Re-injects only the handoff, so compaction never loses the thread |
 | Session end | `SessionEnd` hook | Appends a deduplicated digest to an append-only monthly journal |
-| Oversized tool output | `PostToolUse` hook (`updatedToolOutput`) | Output > 30k chars is first **line-deduplicated with counts** (`[xN]` — logs and test spam compress dramatically, losing no distinct line), then head/tail-excerpted if still over; the **full payload is preserved** in `.claude/memory/spill/` and recoverable via `Read`/`Grep` |
+| Oversized tool output | `PostToolUse` hook (`updatedToolOutput`) | Output > 30k chars — at any depth of the tool response (`Read` nests its payload under `file.content`) — is first **line-deduplicated with counts** (`[xN]` — logs and test spam compress dramatically, losing no distinct line), then head/tail-excerpted if still over; the **full payload is preserved** in `.cmo/spill/` and recoverable via `Read`/`Grep`. (Recent Claude Code versions pre-truncate huge `Bash` outputs themselves, so in practice this fires mostly on `Read`/`Grep`/`WebFetch` results.) |
 | Every user prompt | `UserPromptSubmit` hook | Just-in-time recall: when a prompt's distinctive terms match journal history, injects a ≤100-token pointer to the matching lines. Precision-first: fires only on two co-occurring concepts or one curated glossary concept; synonyms reach it via stemming + glossary expansion; bare affirmations ("sure, go ahead") resolve their referent from the previous assistant turn; never repeats a pointer within a session |
 | Retrieval | `/cmo:recall` skill (model- and user-invocable) | Tiered lazy search: index → handoff → ranked synonym-aware search (`scripts/search.js`, glossary-expanded, weak matches labeled) → `Grep` the journal → `Grep` spill files. On a miss the model retries with its own synonyms — the searcher is the query expander |
 | Durable facts | `/cmo:remember` skill | Curates `decisions.md`/`index.md` with supersede-in-place and a line budget, plus `glossary.md` aliases (recall insurance: the write-time model records the synonyms it can foresee, so recall-time expansion has something to expand) |
+| Memory curation writes | `PreToolUse` hook | Auto-approves `Write`/`Edit` **inside `.cmo/` only** (symlink-escape checked), so `/cmo:remember` and glossary upkeep never stall on a permission prompt — everything else keeps the normal permission flow |
 
 All capture is **deterministic extraction** — no LLM summarization anywhere, so
 memory maintenance costs $0 in API tokens and nothing generative can silently
 poison future sessions. Memory is **plain Markdown inside the repo**
-(`.claude/memory/`): greppable, diffable, reviewable in PRs, and it survives
+(`.cmo/`): greppable, diffable, reviewable in PRs, and it survives
 ephemeral containers and travels to teammates if committed.
+
+Memory deliberately lives at `.cmo/`, **not** under `.claude/`: Claude Code
+hardcodes everything under `.claude/` as a sensitive path, so model-initiated
+writes there always require manual approval (and fail outright in
+non-interactive runs) — even a PreToolUse "allow" cannot override it. Keeping
+model-curated files there would turn every "remember this" into a permission
+dialog. Pre-0.2 `.claude/memory/` trees are migrated to `.cmo/` automatically
+on first touch.
 
 ## Install
 
@@ -57,7 +66,7 @@ current is memory poisoning, not memory. Snapshots also capture **git commits
 made during the session** (scoped by the transcript's first timestamp) — the
 highest-signal deterministic record of what actually happened.
 
-If you don't want memory in version control, add `.claude/memory/` to
+If you don't want memory in version control, add `.cmo/` to
 `.gitignore`; at minimum ignore the spill cache (see this repo's
 `.gitignore`).
 
@@ -170,6 +179,7 @@ scripts/session-start.js       budgeted injection
 scripts/snapshot.js            PreCompact/SessionEnd state capture
 scripts/trim.js                reversible output trimming (dedup + excerpt)
 scripts/jit-recall.js          just-in-time recall pointers
+scripts/approve-memory-writes.js  frictionless Write/Edit inside .cmo/ only
 scripts/search.js              ranked synonym-aware memory search (used by /cmo:recall)
 scripts/lib.js                 shared helpers (stdin, transcript parsing, term expansion)
 skills/recall/SKILL.md         tiered retrieval (/cmo:recall)

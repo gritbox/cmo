@@ -88,7 +88,7 @@ the serialization method stated so the numbers are reproducible:
 | MemPalace retrieval | 900 tok @ 20% of turns | Workload assumption (estimate, not a measurement; applied consistently across systems) |
 | CMO startup | measured (415 tok) | Part 1, capped at `CMO_BUDGET_TOKENS` |
 | CMO "schemas" | 177 tok | **Measured**: two skill frontmatter descriptions, 709 chars (an earlier revision said 80 — corrected to the same standard applied to competitors); no MCP server |
-| CMO retrieval | 200 tok @ 15% of turns | One ranked `search.js` call + matched lines over `.claude/memory/` |
+| CMO retrieval | 200 tok @ 15% of turns | One ranked `search.js` call + matched lines over `.cmo/` |
 | CMO jit pointers | 60 tok @ 10% of prompts | Hard-capped at `CMO_JIT_BUDGET_TOKENS` (100) |
 
 ### Sensitivity analysis

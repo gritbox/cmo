@@ -41,7 +41,7 @@ lib.failOpen(() => {
       sections.push(
         '## Working state\n' +
           `Last recorded working state is ~${Math.round(ageHours / 24)} days old — ` +
-          'treat it as history, not current state. See .claude/memory/handoff.md ' +
+          'treat it as history, not current state. See .cmo/handoff.md ' +
           'and the journal if it becomes relevant.'
       );
     } else if (ageHours !== null && ageHours > staleHours) {
@@ -67,10 +67,10 @@ lib.failOpen(() => {
   }
 
   const pointer = truncated
-    ? `\n[…truncated at ${Math.round(budgetChars / 4)}-token budget. Full memory: .claude/memory/]`
+    ? `\n[…truncated at ${Math.round(budgetChars / 4)}-token budget. Full memory: .cmo/]`
     : '';
   const footer =
-    '\nOlder session history is in .claude/memory/journal/ (append-only Markdown). ' +
+    '\nOlder session history is in .cmo/journal/ (append-only Markdown). ' +
     'Grep it on demand instead of asking the user to repeat context.';
 
   lib.emit({

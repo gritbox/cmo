@@ -1,3 +1,3 @@
 # CMO runtime artifacts in consuming projects (kept out of the plugin repo too)
-.claude/memory/spill/
+.cmo/spill/
 node_modules/

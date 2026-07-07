@@ -80,7 +80,7 @@ including our own earlier one:
 | 1 | Never mutate state you don't own | CMO never touches `~/.claude/projects/` transcripts; it only reads `transcript_path` when a hook hands it over |
 | 2 | Zero background LLM calls | All capture is deterministic extraction (todos, edited files, commands, intents) — memory maintenance costs $0 in API tokens, and nothing generative can poison memory |
 | 3 | Hard budget, not "small-ish" | SessionStart injection is capped (default 800 tokens) and truncated at the cap, every time |
-| 4 | Memory lives in the repo | Plain Markdown under `.claude/memory/` — greppable, diffable, committable, survives ephemeral containers, zero databases |
+| 4 | Memory lives in the repo | Plain Markdown under `.cmo/` — greppable, diffable, committable, survives ephemeral containers, zero databases |
 | 5 | Trim on the doorstep, not in the archive | `PostToolUse.updatedToolOutput` replaces oversized outputs *before* they enter context; full payload spills to a file the model can `Read`/`Grep` back — reversible, no proxy, no KV store |
 | 6 | Survive compaction | `PreCompact` snapshots working state; `SessionStart(source=compact)` re-injects only the handoff |
 | 7 | Fail open | Every hook is wrapped so an error exits 0 silently — a memory plugin must never break a session |

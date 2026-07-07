@@ -1,5 +1,6 @@
 {
   "name": "cmo",
+  "description": "Marketplace for CMO — deterministic, zero-API-cost cross-session memory and context management for Claude Code.",
   "owner": {
     "name": "gritbox"
   },

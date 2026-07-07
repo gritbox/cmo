@@ -74,11 +74,11 @@ function part1() {
   const base = { session_id: 'bench-session-0001', transcript_path: transcript, cwd: proj };
 
   const snap = runHook('snapshot.js', { ...base, hook_event_name: 'SessionEnd', reason: 'exit' });
-  const handoff = fs.readFileSync(path.join(proj, '.claude', 'memory', 'handoff.md'), 'utf8');
+  const handoff = fs.readFileSync(path.join(proj, '.cmo', 'handoff.md'), 'utf8');
 
   // Simulate curated memory accumulating over time, then measure injection.
   fs.writeFileSync(
-    path.join(proj, '.claude', 'memory', 'decisions.md'),
+    path.join(proj, '.cmo', 'decisions.md'),
     '# Decisions\n' + Array.from({ length: 12 }, (_, i) => `- Decision ${i}: use approach ${i} for subsystem ${i}`).join('\n') + '\n'
   );
   const start = runHook('session-start.js', { ...base, hook_event_name: 'SessionStart', source: 'startup' });
@@ -161,7 +161,7 @@ function part2(m) {
       // to others, this is the measured number.) No MCP server.
       toolSchemas: 177,
       residentWhenDeferred: 177,
-      retrievalPerUse: 200,     // one ranked search over .claude/memory/ when needed
+      retrievalPerUse: 200,     // one ranked search over .cmo/ when needed
       retrievalRate: 0.15,
       // jit-recall pointers: capped at ~100 tok, fired on a minority of
       // prompts — charged here so CMO's own hook cost isn't hidden.

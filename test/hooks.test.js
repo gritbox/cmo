@@ -39,7 +39,7 @@ function writeTranscript(dir, lines) {
 }
 
 function memFile(proj, ...rest) {
-  return path.join(proj, '.claude', 'memory', ...rest);
+  return path.join(proj, '.cmo', ...rest);
 }
 
 const userMsg = (t, ts) => ({ timestamp: ts, message: { role: 'user', content: t } });
@@ -52,6 +52,8 @@ function standardTranscript(proj, firstTs) {
   return writeTranscript(proj, [
     userMsg('Fix the flaky login test', firstTs),
     userMsg('<system-reminder>injected harness noise</system-reminder>'),
+    userMsg('<command-message>cmo:remember</command-message> <command-name>/cmo:remember</command-name>'),
+    userMsg('Base directory for this skill: /plugins/cmo/skills/remember # Remember a durable fact'),
     toolUse('Edit', { file_path: path.join(proj, 'src', 'login.test.ts') }),
     toolUse('Bash', { command: 'npm test -- login' }),
     toolUse('TodoWrite', {
@@ -110,6 +112,8 @@ test('snapshot extracts intent, todos, files, commands; filters harness noise', 
   assert.match(handoff, /src[/\\]login\.test\.ts/);
   assert.match(handoff, /npm test -- login/);
   assert.doesNotMatch(handoff, /system-reminder/);
+  assert.doesNotMatch(handoff, /command-message/);
+  assert.doesNotMatch(handoff, /Base directory for this skill/);
   // PreCompact writes the handoff but not the journal
   assert.ok(!fs.existsSync(memFile(proj, 'journal')));
 });
@@ -262,6 +266,28 @@ test('array-of-blocks tool responses are trimmed per text block', () => {
     tool_response: [{ type: 'text', text: 'X'.repeat(40000) }],
   });
   assert.match(r.out.hookSpecificOutput.updatedToolOutput[0].text, /\[cmo: output trimmed/);
+});
+
+test('nested Read-shaped responses (tool_response.file.content) are trimmed', () => {
+  // The real Read tool nests its payload: { type, file: { filePath, content, … } }.
+  const proj = tmpProj();
+  const payload = 'line\n'.repeat(9000); // 45k chars, repetitive
+  const r = run('trim.js', {
+    cwd: proj,
+    tool_name: 'Read',
+    tool_response: {
+      type: 'text',
+      file: { filePath: path.join(proj, 'big.log'), content: payload, numLines: 9000 },
+    },
+  });
+  const file = r.out.hookSpecificOutput.updatedToolOutput.file;
+  assert.match(file.content, /\[cmo: output trimmed/);
+  assert.ok(file.content.length < payload.length);
+  assert.equal(file.numLines, 9000, 'sibling fields untouched');
+  assert.equal(r.out.hookSpecificOutput.updatedToolOutput.type, 'text');
+  const spillDir = memFile(proj, 'spill');
+  const spill = fs.readFileSync(path.join(spillDir, fs.readdirSync(spillDir)[0]), 'utf8');
+  assert.equal(spill, payload);
 });
 
 test('already-trimmed payloads are not re-trimmed', () => {
@@ -473,4 +499,86 @@ test('search.js is silent (exit 0) when memory does not exist', () => {
   });
   assert.equal(res.status, 0);
   assert.equal(res.stdout, '');
+});
+
+// ------------------------------------------------- approve-memory-writes
+
+const approveInput = (proj, tool, file) => ({
+  cwd: proj,
+  tool_name: tool,
+  hook_event_name: 'PreToolUse',
+  tool_input: { file_path: file },
+});
+
+test('memory-dir writes are auto-approved for Write and Edit', () => {
+  const proj = tmpProj();
+  for (const tool of ['Write', 'Edit']) {
+    const r = run('approve-memory-writes.js', approveInput(proj, tool, path.join(proj, '.cmo', 'decisions.md')));
+    assert.equal(r.code, 0);
+    assert.equal(r.out.hookSpecificOutput.permissionDecision, 'allow', `${tool} allowed`);
+  }
+});
+
+test('relative memory paths are approved, everything else gets no opinion', () => {
+  const proj = tmpProj();
+  const rel = run('approve-memory-writes.js', approveInput(proj, 'Write', '.cmo/journal/2026-07.md'));
+  assert.equal(rel.out.hookSpecificOutput.permissionDecision, 'allow');
+  for (const file of [
+    path.join(proj, 'src', 'app.js'), // ordinary project file
+    path.join(proj, '.claude', 'settings.json'), // protected harness config
+    path.join(proj, '.cmo', '..', 'escape.md'), // traversal out of the memory dir
+    proj + '.cmo/decisions.md', // sibling dir with a tricky prefix
+  ]) {
+    const r = run('approve-memory-writes.js', approveInput(proj, 'Write', file));
+    assert.equal(r.out, null, `no opinion for ${file}`);
+  }
+});
+
+test('a symlinked memory subdir cannot become a write gate to elsewhere', () => {
+  const proj = tmpProj();
+  const outside = tmpProj();
+  fs.mkdirSync(path.join(proj, '.cmo'), { recursive: true });
+  try {
+    fs.symlinkSync(outside, path.join(proj, '.cmo', 'link'), 'dir');
+  } catch {
+    return; // symlinks unavailable (Windows without privileges) — skip
+  }
+  const r = run('approve-memory-writes.js', approveInput(proj, 'Write', path.join(proj, '.cmo', 'link', 'x.md')));
+  assert.equal(r.out, null, 'symlink escape must not be auto-approved');
+});
+
+test('non-write tools get no opinion even for memory paths', () => {
+  const proj = tmpProj();
+  const r = run('approve-memory-writes.js', {
+    cwd: proj,
+    tool_name: 'Bash',
+    hook_event_name: 'PreToolUse',
+    tool_input: { command: `rm -rf ${path.join(proj, '.cmo')}` },
+  });
+  assert.equal(r.out, null);
+});
+
+// ------------------------------------------------------- legacy migration
+
+test('a pre-0.2 .claude/memory tree is migrated to .cmo on first touch', () => {
+  const proj = tmpProj();
+  const legacy = path.join(proj, '.claude', 'memory');
+  fs.mkdirSync(path.join(legacy, 'journal'), { recursive: true });
+  fs.writeFileSync(path.join(legacy, 'handoff.md'), '_2099-01-01 00:00 UTC · SessionEnd_\nold state\n');
+  fs.writeFileSync(path.join(legacy, 'journal', '2025-12.md'), '- Intent: legacy entry\n');
+  const r = run('session-start.js', { cwd: proj, source: 'startup' });
+  assert.match(r.out.hookSpecificOutput.additionalContext, /old state/);
+  assert.ok(fs.existsSync(path.join(proj, '.cmo', 'journal', '2025-12.md')), 'tree moved');
+  assert.ok(!fs.existsSync(legacy), 'legacy dir gone');
+});
+
+test('an existing .cmo dir is never clobbered by a leftover legacy tree', () => {
+  const proj = tmpProj();
+  fs.mkdirSync(path.join(proj, '.cmo'), { recursive: true });
+  fs.writeFileSync(path.join(proj, '.cmo', 'handoff.md'), '_2099-01-01 00:00 UTC · SessionEnd_\nnew state\n');
+  fs.mkdirSync(path.join(proj, '.claude', 'memory'), { recursive: true });
+  fs.writeFileSync(path.join(proj, '.claude', 'memory', 'handoff.md'), 'stale\n');
+  const r = run('session-start.js', { cwd: proj, source: 'startup' });
+  assert.match(r.out.hookSpecificOutput.additionalContext, /new state/);
+  assert.doesNotMatch(r.out.hookSpecificOutput.additionalContext, /stale/);
 });

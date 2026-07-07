@@ -1,7 +1,7 @@
 {
   "name": "cmo",
   "description": "Context & Memory Optimizer — deterministic, zero-API-cost cross-session memory and context management for Claude Code. Budgeted session-start recall, compaction-surviving handoffs, reversible trimming of oversized tool outputs, and grep-based retrieval over plain-Markdown memory.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": {
     "name": "gritbox"
   }
