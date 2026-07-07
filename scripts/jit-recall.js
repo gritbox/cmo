@@ -10,7 +10,7 @@
 //
 // Recall breadth without embeddings, in order of application:
 //   - light stemming ("retries" finds "retry")
-//   - glossary expansion: .claude/memory/glossary.md maps a concept to its
+//   - glossary expansion: .cmo/glossary.md maps a concept to its
 //     aliases ("neonhttp: http client, fetch wrapper"); aliases are written
 //     at remember-time by the model, which knows the synonyms when it stores
 //     the fact. All surface forms of one concept count as ONE matched term,
@@ -119,7 +119,7 @@ lib.failOpen(() => {
   const budgetChars = (parseInt(process.env.CMO_JIT_BUDGET_TOKENS, 10) || 100) * 4;
   let msg =
     '[cmo recall hint] Project journal lines matching this prompt ' +
-    '(Grep .claude/memory/journal/ for full context):\n' +
+    '(Grep .cmo/journal/ for full context):\n' +
     fresh.map((c) => `- ${c.file}: ${lib.oneLine(c.line, 150)}`).join('\n');
   if (msg.length > budgetChars) msg = msg.slice(0, budgetChars);
 

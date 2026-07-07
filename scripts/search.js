@@ -3,9 +3,9 @@
 //
 //   node search.js [--cwd <project>] [--top N] <query terms...>
 //
-// Searches every Markdown file under .claude/memory/ (and spill/*.txt) line
+// Searches every Markdown file under .cmo/ (and spill/*.txt) line
 // by line, expanding the query deterministically the same way jit-recall.js
-// does: light stemming plus glossary aliases from .claude/memory/glossary.md.
+// does: light stemming plus glossary aliases from .cmo/glossary.md.
 // Lines are ranked by (distinct concept groups matched, then total variant
 // hits) and the top N printed as `file:line: text`.
 //

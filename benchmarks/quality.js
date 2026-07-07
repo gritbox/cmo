@@ -114,9 +114,9 @@ function seed() {
   // First 8 facts also curated via the /cmo:remember format: decisions + glossary.
   const dec = ['# Decisions', '', `### ${new Date().toISOString().slice(0, 10)}`];
   for (const f of FACTS.slice(0, CURATED)) dec.push(`- Use ${f.choice} for ${f.topic} — ${f.reason}.`);
-  fs.writeFileSync(path.join(proj, '.claude', 'memory', 'decisions.md'), dec.join('\n') + '\n');
+  fs.writeFileSync(path.join(proj, '.cmo', 'decisions.md'), dec.join('\n') + '\n');
   fs.writeFileSync(
-    path.join(proj, '.claude', 'memory', 'glossary.md'),
+    path.join(proj, '.cmo', 'glossary.md'),
     ['# Glossary', ...GLOSSARY.map((g) => `- ${g}`)].join('\n') + '\n'
   );
   return proj;
@@ -260,7 +260,7 @@ for (const q of NEGATIVE_QUERIES) {
 }
 const vagueRecall = vagueHits / FACTS.length;
 
-const journalDir = path.join(proj, '.claude', 'memory', 'journal');
+const journalDir = path.join(proj, '.cmo', 'journal');
 const journalTokens = fs
   .readdirSync(journalDir)
   .reduce((n, f) => n + est(fs.readFileSync(path.join(journalDir, f), 'utf8')), 0);

@@ -51,9 +51,32 @@ function estTokens(s) {
   return Math.ceil((s || '').length / 4);
 }
 
-/** Project-scoped memory root: plain Markdown, greppable, committable. */
+/**
+ * Project-scoped memory root: plain Markdown, greppable, committable.
+ *
+ * Lives at .cmo/ — deliberately NOT under .claude/. Claude Code hardcodes
+ * everything under .claude/ as a sensitive path: model-initiated Write/Edit
+ * there always requires manual approval (and is denied outright in
+ * non-interactive runs), even when a PreToolUse hook answers "allow". Memory
+ * the model is supposed to curate (/cmo:remember, glossary upkeep) must
+ * therefore live outside .claude/. Existing .claude/memory/ trees from
+ * earlier versions are migrated on first touch.
+ */
 function memoryDir(cwd) {
-  return path.join(cwd || process.cwd(), '.claude', 'memory');
+  const root = cwd || process.cwd();
+  const dir = path.join(root, '.cmo');
+  migrateLegacyMemory(root, dir);
+  return dir;
+}
+
+/** One-time move of a pre-0.2 .claude/memory/ tree to .cmo/. Best-effort. */
+function migrateLegacyMemory(root, dir) {
+  try {
+    const legacy = path.join(root, '.claude', 'memory');
+    if (!fs.existsSync(dir) && fs.existsSync(legacy)) fs.renameSync(legacy, dir);
+  } catch {
+    /* concurrent hook won the race, or legacy tree is unmovable — ignore */
+  }
 }
 
 function ensureDir(p) {
@@ -133,6 +156,11 @@ function looksLikeHumanText(s) {
   const t = s.trim();
   if (!t) return false;
   if (t.startsWith('<system-reminder>') || t.startsWith('<command-name>')) return false;
+  // Skill/command invocations appear as pseudo-user turns: a
+  // <command-message> wrapper plus the expanded skill body ("Base directory
+  // for this skill: …"). Neither is something the human typed.
+  if (t.startsWith('<command-message>') || t.startsWith('<local-command-stdout>')) return false;
+  if (t.startsWith('Base directory for this skill')) return false;
   if (t.startsWith('[Request interrupted')) return false;
   return true;
 }

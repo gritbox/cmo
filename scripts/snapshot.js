@@ -5,8 +5,8 @@
 // mutate ~/.claude/projects/ ourselves) and extracts — with zero LLM calls —
 // the session's intents (user messages), todo state, edited files, and recent
 // commands. Writes:
-//   .claude/memory/handoff.md          (overwritten; restored at SessionStart)
-//   .claude/memory/journal/YYYY-MM.md  (append-only digest, SessionEnd only)
+//   .cmo/handoff.md          (overwritten; restored at SessionStart)
+//   .cmo/journal/YYYY-MM.md  (append-only digest, SessionEnd only)
 
 const fs = require('fs');
 const path = require('path');
