@@ -85,7 +85,7 @@ the serialization method stated so the numbers are reproducible:
 | claude-mem background | 1,500 tok/turn | PostToolUse ships raw output to an Agent SDK compression call ("1,000–10,000 tokens compressed to ~500"); background *input* ≈ raw payload. Mechanism verified in the package; volume is an assumption |
 | MemPalace startup | 750 tok (170 in sensitivity) | **Their own** `layers.py` "~600-900 tokens (L0+L1)", midpoint; 170 is a third-party figure |
 | MemPalace MCP schemas | 4,624 tok | **Measured** from the mempalace 3.5.0 wheel's `TOOLS` registry (35 tools, compact JSON) |
-| MemPalace retrieval | 900 tok @ 20% of turns | Blueprint's own workload assumption, kept for comparability |
+| MemPalace retrieval | 900 tok @ 20% of turns | Workload assumption (estimate, not a measurement; applied consistently across systems) |
 | CMO startup | measured (415 tok) | Part 1, capped at `CMO_BUDGET_TOKENS` |
 | CMO "schemas" | 177 tok | **Measured**: two skill frontmatter descriptions, 709 chars (an earlier revision said 80 — corrected to the same standard applied to competitors); no MCP server |
 | CMO retrieval | 200 tok @ 15% of turns | One ranked `search.js` call + matched lines over `.claude/memory/` |
@@ -181,8 +181,8 @@ side of the table, not theirs.
   parameters (startup index size, retrieval size/rate, background compression
   volume) are still **their published claims** — running both systems live
   under an identical replayed workload is the remaining follow-up. The
-  claimed-vs-measured distinction is kept explicit in every table because the
-  blueprint this project responds to failed to do exactly that.
+  claimed-vs-measured distinction is kept explicit in every table so a reader
+  can always tell which numbers we produced and which we inherited.
 - The retrieval-residency term (T/2) favors nobody in particular; changing it
   moves all three systems together.
 - Not modeled, and favoring CMO further if included: claude-mem worker
