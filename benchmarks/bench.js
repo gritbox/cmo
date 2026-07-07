@@ -8,9 +8,10 @@
 //
 // Part 2 feeds those measurements into a cumulative context-cost model of a
 // 100-session project and compares against claude-mem and MemPalace using
-// THEIR published figures (see benchmarks/README.md for sources and the
-// exact parameter table). Competitor numbers are claims, not measurements —
-// which is precisely the distinction the "Strategic Blueprint" failed to make.
+// figures measured from their shipped packages where possible and their
+// published claims where not (see benchmarks/README.md for sources and the
+// exact parameter table). The claimed-vs-measured distinction is kept
+// explicit throughout.
 //
 // Run: node benchmarks/bench.js
 

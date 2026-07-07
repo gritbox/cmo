@@ -7,8 +7,8 @@
 // with head + tail excerpts plus a pointer. The model can Read/Grep the spill
 // file to recover any part — the trim is lossless on disk, cheap in context.
 //
-// This replaces the blueprint's "headroom" proxy + vector store with ~100
-// lines and zero infrastructure. Set CMO_TRIM_CHARS=0 to disable.
+// Does the job of an intercepting-proxy + vector-store compression layer in
+// ~100 lines with zero infrastructure. Set CMO_TRIM_CHARS=0 to disable.
 
 const fs = require('fs');
 const path = require('path');

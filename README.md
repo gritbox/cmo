@@ -5,9 +5,10 @@ packaged as a single Claude Code plugin. No daemons, no databases, no MCP
 server, no Python — five small Node scripts (Claude Code already ships Node)
 and two skills.
 
-CMO was designed from a critical review of the `claude-mem` / `mempalace` /
-`headroom` / `cozempic` stack — see [ANALYSIS.md](ANALYSIS.md) for the full
-teardown and the design principles derived from it.
+CMO's design is derived from measured facts about the `claude-mem` and
+`mempalace` packages and the architectural lessons behind them — see
+[ANALYSIS.md](ANALYSIS.md) for the rationale and design principles, and
+[benchmarks/README.md](benchmarks/README.md) for the measurements.
 
 ## What it does
 
@@ -141,10 +142,10 @@ Why the overhead gap, structurally:
    ~177 tokens — held to the same measurement standard as the competitors').
 3. **A cap, not an average.** claude-mem's injected index grows with history.
    CMO's injection is truncated at a configurable hard budget, every session.
-4. **Lossless trimming with no infrastructure.** The headroom-style
-   compression idea, implemented natively via `updatedToolOutput` + a spill
-   file — no proxy, no vector DB, no KV store, and the model can recover any
-   byte on demand.
+4. **Lossless trimming with no infrastructure.** Oversized-output
+   compression implemented natively via `updatedToolOutput` + a spill file —
+   no proxy, no vector DB, no KV store, and the model can recover any byte
+   on demand.
 5. **Nothing to install or babysit.** No SQLite, no ChromaDB, no worker
    daemon, no filesystem watcher rewriting transcripts it doesn't own. Works
    identically on laptops, CI, and ephemeral cloud containers.

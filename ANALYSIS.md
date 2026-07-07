@@ -1,148 +1,79 @@
-# Critical Analysis: "Strategic Blueprint for Cross-Session Context and Memory Optimization"
+# Design rationale
 
-This document reviews the proposed `claude-mem` + `headroom` + `cozempic` blueprint
-before presenting the design of **CMO** (this repository), which is built from the
-conclusions of this analysis.
+## Provenance, briefly
 
-## Verdict up front
+CMO began as a response to an unsolicited, machine-generated "Strategic
+Blueprint" report that proposed wiring `claude-mem`, `headroom`, and
+`cozempic` together into a memory stack. That report was not produced or
+endorsed by any of those projects, and it misrepresented them in places. A
+point-by-point teardown of it used to live in this file; it has been removed
+— critiquing a bad third-party report about the tools says nothing about the
+tools themselves, and the actual comparison now rests on measurements of the
+shipped packages (method and numbers in
+[benchmarks/README.md](benchmarks/README.md)).
 
-The blueprint correctly identifies the problem (context accumulation across
-sessions) and two real mechanisms (skill progressive disclosure, deterministic
-hooks), but its headline claims are unsupported, its flagship background-daemon
-component is architecturally unsound, and — critically — **the "coded solution"
-does not exist**: the sections titled *Global settings.json Blueprint*,
-*pretooluse_read_guard.py* and *posttooluse_compress.py* are empty headings with
-no code under them. There is nothing to run, so its benchmark tables cannot have
-been produced by the artifact it describes.
+What remains here is what stays relevant: the verified facts about the real
+systems that shaped CMO's design, and the principles derived from them.
 
----
+## Verified facts about the real systems
 
-## 1. The math cannot be reconstructed
+These were measured directly from the shipped artifacts (claude-mem@13.10.2
+from npm, mempalace 3.5.0 from PyPI) — not taken from anyone's writeup,
+including our own earlier one:
 
-Every formula in the document renders as a placeholder glyph (`￼`). Not one of
-the model parameters (turns per session, tokens per prompt, retrieval
-probability, compression factor) is given a value. The headline results —
-19.6M vs 13.97M tokens, "28.7% architectural savings" — are therefore
-unfalsifiable as written.
+- **claude-mem** registers 19 MCP tools (~2,766 tokens of schema, from a live
+  `tools/list` query) plus 17 skills (~1,035 tokens of always-resident
+  descriptions); hooks 6 lifecycle events including `PostToolUse` on `*` and
+  `PreToolUse` on every `Read`; runs a Bun-managed worker daemon; and its
+  worker imports `@anthropic-ai/claude-agent-sdk` — tool-output compression
+  is a background LLM call, i.e. real API spend that never appears in
+  context-window accounting, and a generative step whose summarization errors
+  would compound silently across sessions.
+- **mempalace** registers 35 MCP tools (~4,624 tokens of schema, compact
+  serialization); its own `layers.py` puts wake-up cost at ~600–900 tokens
+  (the widely-quoted 170-token figure is from a third-party writeup and
+  appears nowhere in the package). Storage is ChromaDB + SQLite with an
+  embedding model — real retrieval strength (its published LongMemEval
+  numbers are strong) bought with real operational weight, and state that
+  lives outside the repo does not survive ephemeral/CI containers.
 
-Worse, the numbers are internally inconsistent with the model's own structure.
-In any turn-accumulation model, the dominant term is the **re-sent conversation
-history**, which is identical for both memory architectures — claude-mem and
-mempalace differ only in the session-start payload and occasional retrieval
-calls. A generous startup-payload difference (~2,000 tokens/session × 100
-sessions ≈ 200K tokens) cannot produce the claimed 5.63M-token gap. Either the
-model charges claude-mem for costs that don't land in the live context window
-(its observation compression runs in a background worker), or the numbers were
-not produced by the model at all.
+## Architectural lessons CMO is built on
 
-The citation list confirms the latter suspicion: references [1]–[4] are four
-copies of the same GitHub issue URL, cited as four independent sources.
+1. **Never mutate state you don't own.** A daemon rewriting the CLI's
+   transcript files (the `cozempic` idea) cannot shrink the live context
+   window — the CLI doesn't reload the file mid-session — while it *can*
+   corrupt the transcript other tools depend on, break `--resume`, and
+   invalidate the prompt cache on resume. The hook protocol already provides
+   the legitimate seams: `PreCompact` fires before history is flattened,
+   `SessionStart(source=compact)` fires after, and
+   `PostToolUse.updatedToolOutput` can replace a bulky result *before it
+   enters context*. Deterministic lifecycle logic belongs there — no daemon,
+   no file races, no TLS-terminating proxy.
+2. **Zero background LLM calls.** Deterministic extraction costs $0 in API
+   tokens, and nothing generative can silently poison future sessions. The
+   glossary tier keeps this property: the model writes aliases at
+   remember-time, but they land as reviewable Markdown the user can audit and
+   edit — never as an unreviewed generative rewrite of past events.
+3. **Resident payload is the hidden overhead.** Tool schemas and skill
+   descriptions sit in context every turn (on eager-loading clients; newer
+   Claude Code can defer MCP schemas — the benchmarks carry both cases).
+   A memory system's *headline* startup number is meaningless without its
+   schema footprint next to it.
+4. **Query-driven beats push-driven at scale — with a hard cap.** mempalace's
+   small-startup + on-demand retrieval is the right shape. CMO keeps the
+   startup payload budgeted and *truncated at the cap*, every session; a
+   growing injected index is an average, not a guarantee.
+5. **Reversible trimming beats archival compression.** Replace oversized tool
+   outputs on the doorstep (`updatedToolOutput`) and spill the full payload
+   to a plain file the model can `Read`/`Grep` back — lossless on disk, no
+   proxy, no vector store, no KV service.
+6. **Memory quality must be measured, not asserted.** Token counts say
+   nothing about whether the *right* memory surfaces. CMO gates recall
+   quality in CI (`benchmarks/quality.js`) and reports standardized retrieval
+   numbers on the real LongMemEval-S dataset (`benchmarks/longmemeval.js`) —
+   including the trade-offs it loses, like uncurated paraphrase recall.
 
-## 2. Misdiagnosis of the JSONL "token bloat" mechanism
-
-The blueprint's core premise — that Claude Code "reads the JSONL records and
-re-transmits them as prompt attachments" — misstates how the CLI works. The
-JSONL under `~/.claude/projects/` is a **local transcript/audit log**. The live
-context window is held in memory; growth in input tokens is the conversation
-itself, and it is mitigated natively by prompt caching (append-only history is
-cheap to re-send) and by compaction.
-
-This misdiagnosis is fatal for `cozempic`, the blueprint's flagship guardrail:
-
-- A daemon rewriting the JSONL every 30 seconds **does not shrink the live
-  context window at all** — the CLI does not reload the pruned file
-  mid-session. The claimed "frees 30–70% of the active context window" has no
-  mechanism behind it.
-- It races with the CLI's own appends to the same file, risking transcript
-  corruption — which breaks `--resume`, `/rewind`, and any other tool (including
-  claude-mem's own hooks) that reads `transcript_path`.
-- Where it *does* take effect (session resume), rewriting history **invalidates
-  the prompt cache**, so the "optimization" can increase cost per token
-  re-read.
-- "Flattens intermediate thinking blocks" and "removes older tool results" from
-  a transcript another process owns is exactly the kind of destructive,
-  non-consensual mutation a guardrail should prevent, not perform.
-
-The correct place for deterministic lifecycle logic is the **hook protocol**
-(which the blueprint mentions but under-uses): `PreCompact` fires before the CLI
-flattens history, `SessionStart(source=compact)` fires after, and
-`PostToolUse.updatedToolOutput` can replace a bulky tool result *before it ever
-enters the context* — no daemon, no file races, no cache invalidation.
-
-## 3. Hook-protocol errors and omissions
-
-- The blueprint describes the hook contract as "exit codes and standard
-  output". That contract cannot implement its own `posttooluse_compress.py`
-  design: replacing a tool result requires the structured JSON output field
-  `hookSpecificOutput.updatedToolOutput`. The mechanism exists — the blueprint
-  just doesn't know about it, which is why its compressor is specified as an
-  "intercepting proxy" (a design that sits outside Claude Code, breaks
-  transcript integrity, and adds a TLS-terminating middlebox to every API
-  call).
-- The `pretooluse_read_guard.py` design (hard-block large `Read`s and tell the
-  model to use an MCP tool) burns a failed turn on every large file. The
-  supported `updatedInput` field, or simply letting `Read`'s native 2,000-line
-  cap work, is strictly better. The real hazard is unbounded `Bash` output
-  (`cat`, test logs), which the guard doesn't cover but `PostToolUse` does.
-- The skill-invocability table is garbled mid-cell (`disable-model-invocati
-  [span_95]...on: true` — an artifact of unedited machine generation) and row 4
-  is wrong: omitting `description` doesn't create a "private helper" tier;
-  model invocation is governed by `disable-model-invocation`, and a skill
-  without a description simply can't be auto-matched.
-- "The runtime only reads the metadata block" is presented as zero-cost. Skill
-  descriptions **are** loaded into context every session (that's how
-  auto-matching works). Progressive disclosure lowers the cost; it isn't free,
-  and a stack that installs many skills pays for every description on every
-  turn.
-
-## 4. The three-tool stack fights itself
-
-- **Three overlapping stores** for one problem: claude-mem's SQLite + Chroma,
-  headroom's KV store, and cozempic mutating the transcript in place. Nobody
-  owns the source of truth.
-- **cozempic deletes what the others depend on.** It prunes "older tool
-  results" from the very transcript claude-mem's observer and headroom's hash
-  references need to stay resolvable on resume.
-- **Hidden API spend is excluded from every table.** claude-mem compresses
-  observations "with AI" via the Agent SDK — i.e., every tool call ships its
-  raw output through a *background LLM call*. Over the blueprint's own 100
-  sessions × ~40 turns, that is millions of background input tokens that its
-  "token savings" accounting simply omits. Headroom's retrieval round-trips
-  (fetch the full payload back when the hash reference wasn't enough) are
-  likewise uncounted — and when a retrieval happens, you pay the original
-  tokens *plus* the marker *plus* an extra turn.
-- **Operational weight**: two Python daemons + one Node worker + ChromaDB + a
-  port-37777 HTTP service, per developer laptop, with no Windows story and no
-  failure-mode analysis. In ephemeral/CI/cloud environments (fresh container
-  per session), local daemons and out-of-repo databases lose all state — the
-  memory doesn't travel with the project.
-
-## 5. No measure of memory *quality*
-
-Every benchmark in the document is a token count. Nothing measures whether the
-**right** memory surfaces (precision/recall), whether stale decisions get
-contradicted, or whether a bad LLM-generated summary poisons future sessions
-(claude-mem's compression is generative, so summarization errors compound
-silently). A memory system that saves 48% of tokens while injecting wrong or
-stale context is worse than no memory system.
-
-## 6. What the blueprint gets right (and CMO keeps)
-
-- **Query-driven beats push-driven** at scale: mempalace's tiny startup payload
-  + on-demand retrieval is the right shape. Keep the startup payload small and
-  *budgeted*, retrieve the rest lazily.
-- **Progressive disclosure via skills** is real and effective: frontmatter
-  description in context, body loaded on invocation, reference files loaded on
-  explicit read.
-- **Deterministic hooks over advisory prompts** for lifecycle guarantees:
-  `PreCompact` snapshots and `SessionStart` restoration should be code, not
-  hopes.
-- **Reversible trimming of bulky tool outputs** is worth doing — but natively,
-  via `updatedToolOutput` + a plain spill file, not a proxy + vector DB.
-
----
-
-## Design principles for CMO (derived from the above)
+## Design principles
 
 | # | Principle | Consequence in CMO |
 |---|-----------|--------------------|
@@ -154,3 +85,4 @@ stale context is worse than no memory system.
 | 6 | Survive compaction | `PreCompact` snapshots working state; `SessionStart(source=compact)` re-injects only the handoff |
 | 7 | Fail open | Every hook is wrapped so an error exits 0 silently — a memory plugin must never break a session |
 | 8 | No daemons, no ports, no deps | Node scripts only (Claude Code already ships Node); works anywhere the CLI works, including CI and cloud containers |
+| 9 | Expansion without embeddings | Synonyms are curated at remember-time (`glossary.md`) and applied deterministically at recall-time — recall breadth from write-time knowledge, not from an embedding pipeline |
