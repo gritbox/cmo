@@ -10,6 +10,12 @@ CMO's design is derived from measured facts about the `claude-mem` and
 [ANALYSIS.md](ANALYSIS.md) for the rationale and design principles, and
 [benchmarks/README.md](benchmarks/README.md) for the measurements.
 
+To run CMO as the memory substrate under an opinionated engineering workflow,
+see [WORKFLOW.md](WORKFLOW.md) — a cross-comparative analysis and combined
+setup for using CMO together with [mattpocock/skills][mp].
+
+[mp]: https://github.com/mattpocock/skills
+
 ## What it does
 
 | Lifecycle point | Mechanism | Effect |
