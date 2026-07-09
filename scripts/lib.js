@@ -261,7 +261,7 @@ function extractTerms(text) {
 }
 //
 // Deterministic recall expansion: light stemming plus an optional
-// project-curated glossary (.claude/memory/glossary.md). No embeddings, no
+// project-curated glossary (.cmo/glossary.md). No embeddings, no
 // index build — the glossary is written at remember-time by the model (which
 // knows the likely synonyms when it stores the fact) and consumed at
 // recall-time by plain string matching.
@@ -282,7 +282,7 @@ function stem(word) {
 }
 
 /**
- * Parse `.claude/memory/glossary.md` lines of the form
+ * Parse `.cmo/glossary.md` lines of the form
  *   `- head: alias, alias, multi word alias`
  * into [{ head, aliases }]. Everything is lowercased. Malformed lines are
  * skipped — the glossary is user-editable Markdown, not a schema.

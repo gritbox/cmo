@@ -38,5 +38,14 @@ conversation and state what you are saving before saving it.
    what remember-time recorded. Keep heads unique; if the term already has a
    line, extend its aliases instead of adding a duplicate. Domain-scoped
    meanings belong here too (`- container: docker` in a deployment project).
+   Aliases are **search terms, not a synonyms list**: 2–4 per term, only
+   words someone would plausibly type when looking for the concept. A
+   glossary hit alone clears the just-in-time recall precision bar, so a
+   sloppy alias becomes a false pointer, not harmless padding. When the file
+   passes ~40 terms, consolidate: merge duplicate heads, drop dead terms,
+   tighten aliases. Never edit lines inside a
+   `<!-- trolly:derived -->` … `<!-- /trolly:derived -->` block — those are
+   machine-generated from `journey/glossary.md` by the Trolly plugin; fix
+   the term there instead.
 
 Confirm to the user in one line what was written and where.
