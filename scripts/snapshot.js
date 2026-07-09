@@ -92,13 +92,19 @@ lib.failOpen(() => {
     const sidTag = `session ${sid}`;
     const existing = lib.readIfExists(file, 1024 * 1024);
     if (!existing.includes(sidTag)) {
-      // Journal entries are terser than the handoff: intent, files, todos left open.
+      // The journal is a PULLED tier (grepped on demand, never injected), so
+      // terseness buys nothing here while every dropped distinctive string is
+      // a future recall miss — CMO's own LongMemEval run puts the digest-vs-
+      // verbatim gap at 17 points of R@5 (see RETENTION.md). Keep ALL intents
+      // and exact error lines: those carry the high-entropy strings keyword
+      // search needs verbatim. The handoff above stays lean — it is injected.
       const open = state.todos.filter((t) => !t.startsWith('[completed]'));
       const entry = [
         `\n---\n### ${stamp} (${sidTag})${branch ? ` on \`${branch}\`` : ''}`,
-        state.intents.length ? `- Intent: ${state.intents[0]}` : null,
+        state.intents.length ? `- Intent: ${state.intents.slice(0, 4).join(' | ')}` : null,
         commits.length ? `- Commits: ${commits.map((c) => lib.oneLine(c, 80)).join('; ')}` : null,
         state.filesEdited.length ? `- Touched: ${state.filesEdited.join(', ')}` : null,
+        state.errors.length ? `- Errors seen: ${state.errors.join(' | ')}` : null,
         open.length ? `- Left open: ${open.join('; ')}` : null,
       ]
         .filter(Boolean)

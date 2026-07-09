@@ -104,7 +104,13 @@ function readIfExists(p, maxBytes = 256 * 1024) {
  * used to scope git-log capture to the session window.
  */
 function parseTranscript(transcriptPath) {
-  const out = { userTexts: [], toolUses: [], assistantTexts: [], firstTimestamp: null };
+  const out = {
+    userTexts: [],
+    toolUses: [],
+    assistantTexts: [],
+    toolResultTexts: [],
+    firstTimestamp: null,
+  };
   let raw = '';
   try {
     raw = fs.readFileSync(transcriptPath, 'utf8');
@@ -132,6 +138,23 @@ function parseTranscript(transcriptPath) {
         for (const block of content) {
           if (block && block.type === 'text' && looksLikeHumanText(block.text)) {
             out.userTexts.push(block.text);
+          } else if (block && block.type === 'tool_result') {
+            // Tool results carry the strings future keyword recall needs
+            // verbatim (exact error messages, identifiers). Keep a bounded
+            // tail; extractState distills error lines from it.
+            const text =
+              typeof block.content === 'string'
+                ? block.content
+                : Array.isArray(block.content)
+                  ? block.content
+                      .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
+                      .map((b) => b.text)
+                      .join('\n')
+                  : '';
+            if (text) {
+              out.toolResultTexts.push(text.slice(0, 4000));
+              if (out.toolResultTexts.length > 40) out.toolResultTexts.shift();
+            }
           }
         }
       }
@@ -165,9 +188,24 @@ function looksLikeHumanText(s) {
   return true;
 }
 
+// Lines worth keeping verbatim for future keyword recall: failures carry the
+// most distinctive strings a later session will search for. Deliberately a
+// word-boundary list, not a fuzzy match — a false "error" line in the journal
+// is noise forever.
+const ERROR_LINE = /\b(error|exception|fatal|failed|failure|traceback|panic|segfault|enoent|econnrefused|etimedout)\b/i;
+
 /** Extract deterministic working state from a parsed transcript. */
 function extractState(parsed, cwd) {
-  const state = { intents: [], todos: [], filesEdited: [], commands: [] };
+  const state = { intents: [], todos: [], filesEdited: [], commands: [], errors: [] };
+
+  const errs = [];
+  for (const text of parsed.toolResultTexts || []) {
+    for (const line of text.split('\n')) {
+      const t = line.trim();
+      if (t && t.length <= 400 && ERROR_LINE.test(t)) errs.push(oneLine(t, 160));
+    }
+  }
+  state.errors = dedupeTail(errs, 6);
 
   const texts = parsed.userTexts.map((t) => oneLine(t, 220));
   if (texts.length) {
@@ -376,6 +414,84 @@ function lineStemSet(lineLow) {
   return s;
 }
 
+// ------------------------------------------------------------ heat tracking
+//
+// A deterministic read-time tally over the PULLED memory tiers (journal,
+// spill, glossary): every time a retrieval path actually surfaces a memory
+// line — search.js results, jit-recall pointers, model Reads/Greps of spill
+// and journal files — the hit is recorded in .cmo/heat.json. The signal is
+// asymmetric by design (see RETENTION.md): heat PROTECTS and PROMOTES
+// (spill pruning skips accessed files; /cmo:recall promotes repeatedly-hit
+// journal lines toward decisions.md); coldness alone never deletes anything.
+// Injected tiers (decisions.md, index.md) are deliberately not tracked —
+// they are never recalled *because they are already present*, so zero hits
+// there means the injection is working, not that the content is cold.
+//
+// Counts decay by half at each month boundary, so heat is recent-weighted
+// without ever wiping the ledger in one step. Disable with CMO_HEAT=off.
+
+const HEAT_MAX_KEYS = 400;
+
+function heatPath(cwd) {
+  return path.join(memoryDir(cwd), 'heat.json');
+}
+
+/** Load the heat ledger, applying the monthly half-life decay lazily. */
+function loadHeat(cwd) {
+  let heat;
+  try {
+    heat = JSON.parse(readIfExists(heatPath(cwd)) || 'null');
+  } catch {
+    heat = null;
+  }
+  if (!heat || typeof heat.hits !== 'object') heat = { v: 1, decayed: month(), hits: {} };
+  if (heat.decayed !== month()) {
+    for (const [k, h] of Object.entries(heat.hits)) {
+      h.n = Math.floor(h.n / 2);
+      if (h.n < 1) delete heat.hits[k];
+    }
+    heat.decayed = month();
+  }
+  return heat;
+}
+
+/**
+ * Record read-time hits. Keys by convention:
+ *   `<relfile>:<sha12(line)>`  a specific memory line that was surfaced
+ *   `file:<relpath>`           a whole-file access (spill/journal Read or Grep)
+ *   `glossary:<head>`          a curated concept that produced a match
+ * Best-effort and silent: heat must never break a retrieval path.
+ */
+function recordHeat(cwd, keys) {
+  if ((process.env.CMO_HEAT || '').toLowerCase() === 'off') return;
+  if (!keys || !keys.length) return;
+  try {
+    const dir = memoryDir(cwd);
+    if (!fs.existsSync(dir)) return;
+    const heat = loadHeat(cwd);
+    const today = new Date().toISOString().slice(0, 10);
+    for (const k of keys) {
+      const h = heat.hits[k] || { n: 0, last: today };
+      h.n += 1;
+      h.last = today;
+      heat.hits[k] = h;
+    }
+    // Bound the ledger: drop the coldest keys (fewest hits, oldest last).
+    const entries = Object.entries(heat.hits);
+    if (entries.length > HEAT_MAX_KEYS) {
+      entries.sort((a, b) => a[1].n - b[1].n || (a[1].last < b[1].last ? -1 : 1));
+      for (const [k] of entries.slice(0, entries.length - HEAT_MAX_KEYS)) delete heat.hits[k];
+    }
+    fs.writeFileSync(heatPath(cwd), JSON.stringify(heat));
+  } catch {
+    /* deliberately silent */
+  }
+}
+
+function month() {
+  return new Date().toISOString().slice(0, 7);
+}
+
 /** Emit hook JSON and exit successfully. */
 function emit(obj) {
   writeStdoutSync(JSON.stringify(obj));
@@ -436,4 +552,7 @@ module.exports = {
   termGroups,
   groupMatchesLine,
   lineStemSet,
+  heatPath,
+  loadHeat,
+  recordHeat,
 };

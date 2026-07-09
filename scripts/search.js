@@ -78,10 +78,25 @@ function main() {
   })(root);
 
   hits.sort((a, b) => b.matched - a.matched || b.variantHits - a.variantHits);
-  for (const h of hits.slice(0, top)) {
+  const shown = hits.slice(0, top);
+  for (const h of shown) {
     const tag = h.weak ? ` [weak: only "${h.matchedSources[0]}" matched]` : '';
     process.stdout.write(`${h.rel}:${h.n}: ${lib.oneLine(h.t, 200)}${tag}\n`);
   }
+
+  // Read-time heat: every surfaced line (and the curated concepts that
+  // surfaced it) is a hit. Heat protects spill files from pruning and marks
+  // journal lines as promotion candidates — see RETENTION.md.
+  const heatKeys = [];
+  for (const h of shown) {
+    heatKeys.push(`${h.rel.split(path.sep).join('/')}:${lib.sha12(h.t)}`);
+  }
+  for (const g of groups) {
+    if (g.curated && shown.some((h) => h.matchedSources.includes(g.source))) {
+      heatKeys.push(`glossary:${g.source}`);
+    }
+  }
+  lib.recordHeat(cwd, heatKeys);
 }
 
 try {

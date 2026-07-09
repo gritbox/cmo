@@ -325,13 +325,40 @@ test('mostly-unique payloads skip dedup and fall back to head+tail', () => {
   assert.doesNotMatch(stdout, /deduplicated/);
 });
 
-test('spill directory is capped at CMO_SPILL_MAX files', () => {
+test('spill directory is capped at CMO_SPILL_MAX files, pruned files leave tombstones', () => {
   const proj = tmpProj();
   for (let i = 0; i < 5; i++) {
     run('trim.js', trimInput(proj, `payload-${i}-` + 'X'.repeat(40000)), { CMO_SPILL_MAX: '3' });
   }
-  const files = fs.readdirSync(memFile(proj, 'spill'));
+  const files = fs.readdirSync(memFile(proj, 'spill')).filter((f) => f.endsWith('.txt'));
   assert.ok(files.length <= 3, `expected <=3 spill files, got ${files.length}`);
+  const tomb = fs.readFileSync(memFile(proj, 'spill', 'tombstones.md'), 'utf8');
+  assert.match(tomb, /pruned \d{4}-\d{2}-\d{2}/);
+  assert.match(tomb, /began: "payload-0-/); // oldest unaccessed went first
+});
+
+test('accessed spill files are protected from pruning; a Read records heat', () => {
+  const proj = tmpProj();
+  // Create the first spill, then simulate the model Reading it back.
+  run('trim.js', trimInput(proj, 'precious-' + 'X'.repeat(40000)), { CMO_SPILL_MAX: '2' });
+  const first = fs.readdirSync(memFile(proj, 'spill')).find((f) => f.endsWith('.txt'));
+  run('trim.js', {
+    tool_name: 'Read',
+    tool_input: { file_path: memFile(proj, 'spill', first) },
+    cwd: proj,
+  });
+  const heat = JSON.parse(fs.readFileSync(memFile(proj, 'heat.json'), 'utf8'));
+  assert.ok(heat.hits[`file:spill/${first}`], 'Read of a spill file is recorded as heat');
+
+  // Ensure distinct mtimes so the accessed file is the oldest candidate.
+  fs.utimesSync(memFile(proj, 'spill', first), new Date(Date.now() - 60000), new Date(Date.now() - 60000));
+  for (let i = 0; i < 4; i++) {
+    run('trim.js', trimInput(proj, `later-${i}-` + 'Y'.repeat(40000)), { CMO_SPILL_MAX: '2' });
+  }
+  assert.ok(
+    fs.existsSync(memFile(proj, 'spill', first)),
+    'the accessed (hot) spill survives pruning that removed colder, newer files'
+  );
 });
 
 // ---------------------------------------------------------------- jit-recall
@@ -581,4 +608,104 @@ test('an existing .cmo dir is never clobbered by a leftover legacy tree', () => 
   const r = run('session-start.js', { cwd: proj, source: 'startup' });
   assert.match(r.out.hookSpecificOutput.additionalContext, /new state/);
   assert.doesNotMatch(r.out.hookSpecificOutput.additionalContext, /stale/);
+});
+
+// ------------------------------------------------- retention (RETENTION.md)
+
+test('budget eviction is value-ordered: newest decisions survive, oldest are shed', () => {
+  const proj = tmpProj();
+  fs.mkdirSync(memFile(proj), { recursive: true });
+  const stamp = new Date(Date.now() - 3_600_000).toISOString().slice(0, 16).replace('T', ' ');
+  fs.writeFileSync(memFile(proj, 'handoff.md'), `_${stamp} UTC · SessionEnd_\n\n**Working on:**\n- current work\n`);
+  fs.writeFileSync(
+    memFile(proj, 'decisions.md'),
+    '# Decisions\n### 2024-01-01\n- OLD-RULE ' + 'filler '.repeat(60) + '\n### 2026-07-01\n- NEW-RULE use widget-beta\n'
+  );
+  fs.writeFileSync(memFile(proj, 'index.md'), '# Index\n- entry point: src/main.ts\n');
+  const ctx = run('session-start.js', { cwd: proj, source: 'startup' }, { CMO_BUDGET_TOKENS: '150' })
+    .out.hookSpecificOutput.additionalContext;
+  assert.match(ctx, /NEW-RULE use widget-beta/, 'newest decision survives the budget');
+  assert.doesNotMatch(ctx, /OLD-RULE/, 'oldest decision is the one shed');
+  assert.match(ctx, /older decisions omitted at budget/);
+  assert.match(ctx, /entry point: src\/main\.ts/, 'index still fits after value-ordered trim');
+});
+
+test('journal digest keeps all intents and verbatim error lines', () => {
+  const proj = tmpProj();
+  const transcript = writeTranscript(proj, [
+    userMsg('Fix the payment webhook', '2026-07-09T10:00:00Z'),
+    {
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            content: 'stack:\nError: connect ECONNREFUSED 127.0.0.1:5432 at db.ts:42\nmore output',
+          },
+        ],
+      },
+    },
+    toolUse('Edit', { file_path: path.join(proj, 'src', 'webhook.ts') }),
+    userMsg('also retry idempotently on duplicate delivery'),
+  ]);
+  run('snapshot.js', {
+    cwd: proj,
+    transcript_path: transcript,
+    hook_event_name: 'SessionEnd',
+    session_id: 'retention-1',
+  });
+  const journal = fs.readFileSync(
+    memFile(proj, 'journal', new Date().toISOString().slice(0, 7) + '.md'),
+    'utf8'
+  );
+  assert.match(journal, /Intent: Fix the payment webhook \| also retry idempotently/);
+  assert.match(journal, /Errors seen: .*ECONNREFUSED 127\.0\.0\.1:5432 at db\.ts:42/);
+});
+
+test('search.js records line and glossary heat for surfaced results', () => {
+  const proj = tmpProj();
+  seedJournal(proj);
+  seedGlossary(proj);
+  execFileSync('node', [path.join(SCRIPTS, 'search.js'), '--cwd', proj, 'throttling', 'sliding', 'windows'], {
+    encoding: 'utf8',
+  });
+  const heat = JSON.parse(fs.readFileSync(memFile(proj, 'heat.json'), 'utf8'));
+  const keys = Object.keys(heat.hits);
+  assert.ok(keys.some((k) => k.startsWith('journal/2026-06.md:')), 'surfaced line recorded');
+  assert.ok(keys.includes('glossary:floodgate'), 'curated concept that matched is recorded');
+});
+
+test('jit-recall records heat for the pointers it injects', () => {
+  const proj = tmpProj();
+  seedJournal(proj);
+  const r = run('jit-recall.js', jitInput(proj, 'why is rate limiting behaving oddly under load?'));
+  assert.ok(r.out, 'pointer fired');
+  const heat = JSON.parse(fs.readFileSync(memFile(proj, 'heat.json'), 'utf8'));
+  assert.ok(
+    Object.keys(heat.hits).some((k) => k.startsWith('journal/2026-06.md:')),
+    'injected pointer line recorded as heat'
+  );
+});
+
+test('heat counts halve at month boundaries and CMO_HEAT=off disables recording', () => {
+  const proj = tmpProj();
+  fs.mkdirSync(memFile(proj), { recursive: true });
+  fs.writeFileSync(
+    memFile(proj, 'heat.json'),
+    JSON.stringify({ v: 1, decayed: '2020-01', hits: { 'file:spill/a.txt': { n: 5, last: '2020-01-15' }, 'file:spill/b.txt': { n: 1, last: '2020-01-15' } } })
+  );
+  const lib = require(path.join(SCRIPTS, 'lib.js'));
+  const heat = lib.loadHeat(proj);
+  assert.equal(heat.hits['file:spill/a.txt'].n, 2, 'count halved (floor)');
+  assert.equal(heat.hits['file:spill/b.txt'], undefined, 'decayed-to-zero keys dropped');
+
+  const off = tmpProj();
+  fs.mkdirSync(memFile(off), { recursive: true });
+  process.env.CMO_HEAT = 'off';
+  try {
+    lib.recordHeat(off, ['file:spill/x.txt']);
+  } finally {
+    delete process.env.CMO_HEAT;
+  }
+  assert.ok(!fs.existsSync(memFile(off, 'heat.json')), 'CMO_HEAT=off writes nothing');
 });

@@ -7,7 +7,9 @@ and two skills.
 
 CMO's design is derived from measured facts about the `claude-mem` and
 `mempalace` packages and the architectural lessons behind them — see
-[ANALYSIS.md](ANALYSIS.md) for the rationale and design principles, and
+[ANALYSIS.md](ANALYSIS.md) for the rationale and design principles,
+[RETENTION.md](RETENTION.md) for the retention economics (pushed vs. pulled
+context, value-ordered eviction, the read-time heat ledger), and
 [benchmarks/README.md](benchmarks/README.md) for the measurements.
 
 To run CMO as the memory substrate under an opinionated engineering workflow,
@@ -20,15 +22,16 @@ setup for using CMO together with [mattpocock/skills][mp].
 
 | Lifecycle point | Mechanism | Effect |
 |---|---|---|
-| Session start / resume / clear | `SessionStart` hook | Injects a **hard-budgeted** memory slice (default ≤ 800 tokens, truncated at the cap): last working state, durable decisions, curated index |
+| Session start / resume / clear | `SessionStart` hook | Injects a **hard-budgeted** memory slice (default ≤ 800 tokens): last working state, durable decisions, curated index. Eviction under budget pressure is **value-ordered**, not positional: index drops to a pointer first, decisions shed their *oldest* date-sections next (newest survive), the handoff is cut only as a last resort ([RETENTION.md](RETENTION.md)) |
 | Before compaction | `PreCompact` hook | Deterministically snapshots working state (intent, todos, edited files, recent commands) from the transcript to `.cmo/handoff.md` |
 | After compaction | `SessionStart(source=compact)` hook | Re-injects only the handoff, so compaction never loses the thread |
-| Session end | `SessionEnd` hook | Appends a deduplicated digest to an append-only monthly journal |
-| Oversized tool output | `PostToolUse` hook (`updatedToolOutput`) | Output > 30k chars — at any depth of the tool response (`Read` nests its payload under `file.content`) — is first **line-deduplicated with counts** (`[xN]` — logs and test spam compress dramatically, losing no distinct line), then head/tail-excerpted if still over; the **full payload is preserved** in `.cmo/spill/` and recoverable via `Read`/`Grep`. (Recent Claude Code versions pre-truncate huge `Bash` outputs themselves, so in practice this fires mostly on `Read`/`Grep`/`WebFetch` results.) |
+| Session end | `SessionEnd` hook | Appends a deduplicated digest to an append-only monthly journal — including **all session intents and verbatim error lines** (the high-entropy strings future keyword recall needs; the journal is pulled, never injected, so terseness there bought nothing — [RETENTION.md](RETENTION.md)) |
+| Oversized tool output | `PostToolUse` hook (`updatedToolOutput`) | Output > 30k chars — at any depth of the tool response (`Read` nests its payload under `file.content`) — is first **line-deduplicated with counts** (`[xN]` — logs and test spam compress dramatically, losing no distinct line), then head/tail-excerpted if still over; the **full payload is preserved** in `.cmo/spill/` and recoverable via `Read`/`Grep`. Spill pruning is **cold-aware and tombstoned**: files the model came back to read are protected (2× hard cap), and every pruned file leaves a one-line tombstone so no reference ever dangles silently. (Recent Claude Code versions pre-truncate huge `Bash` outputs themselves, so in practice this fires mostly on `Read`/`Grep`/`WebFetch` results.) |
 | Every user prompt | `UserPromptSubmit` hook | Just-in-time recall: when a prompt's distinctive terms match journal history, injects a ≤100-token pointer to the matching lines. Precision-first: fires only on two co-occurring concepts or one curated glossary concept; synonyms reach it via stemming + glossary expansion; bare affirmations ("sure, go ahead") resolve their referent from the previous assistant turn; never repeats a pointer within a session |
 | Retrieval | `/cmo:recall` skill (model- and user-invocable) | Tiered lazy search: index → handoff → ranked synonym-aware search (`scripts/search.js`, glossary-expanded, weak matches labeled) → `Grep` the journal → `Grep` spill files. On a miss the model retries with its own synonyms — the searcher is the query expander |
 | Durable facts | `/cmo:remember` skill | Curates `decisions.md`/`index.md` with supersede-in-place and a line budget, plus `glossary.md` aliases (recall insurance: the write-time model records the synonyms it can foresee, so recall-time expansion has something to expand) |
 | Memory curation writes | `PreToolUse` hook | Auto-approves `Write`/`Edit` **inside `.cmo/` only** (symlink-escape checked), so `/cmo:remember` and glossary upkeep never stall on a permission prompt — everything else keeps the normal permission flow |
+| Read-time heat | recorded by `search.js`, `jit-recall.js`, and the `PostToolUse` hook | Every retrieval that surfaces a memory line (and every model `Read`/`Grep` of spill/journal files) tallies a hit in `.cmo/heat.json` (monthly half-life decay, bounded, `CMO_HEAT=off` disables). **Asymmetric by design**: heat protects spill files from pruning and marks repeat lookups as promotion candidates for `decisions.md`; coldness alone never deletes anything ([RETENTION.md](RETENTION.md)) |
 
 All capture is **deterministic extraction** — no LLM summarization anywhere, so
 memory maintenance costs $0 in API tokens and nothing generative can silently
@@ -66,6 +69,7 @@ Or for local development: clone, then `claude --plugin-dir /path/to/cmo`.
 | `CMO_SPILL_MAX` | `50` | Maximum spill files kept (oldest pruned first) |
 | `CMO_JIT` | on | Set to `off` to disable just-in-time recall pointers |
 | `CMO_JIT_BUDGET_TOKENS` | `100` | Hard cap on a just-in-time pointer |
+| `CMO_HEAT` | on | Set to `off` to disable read-time heat recording (`.cmo/heat.json`) |
 
 Staleness gating exists because a weeks-old "working state" presented as
 current is memory poisoning, not memory. Snapshots also capture **git commits

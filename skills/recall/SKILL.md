@@ -43,3 +43,11 @@ When you find the answer, cite which memory file it came from so the user can
 correct stale entries. If the query used a synonym the memory didn't (that is
 why step 3 needed a second run), add the missing alias to
 `.cmo/glossary.md` so the next lookup matches on the first try.
+
+**Promote hot memories.** Retrieval hits are tallied in `.cmo/heat.json`
+(key `<file>:<line-hash>` → count). If the answer came from the journal or a
+spill file and its heat count shows this is a repeat lookup (n ≥ 2), the
+memory is living in the wrong tier: distill it into `decisions.md` or
+`index.md` (one self-contained line, per /cmo:remember rules) so future
+sessions get it injected instead of re-searching for it. Heat promotes;
+never use a low count as a reason to delete anything.
