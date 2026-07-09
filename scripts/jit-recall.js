@@ -116,6 +116,16 @@ lib.failOpen(() => {
     /* dedup is best-effort */
   }
 
+  // Read-time heat: a pointer the hook chose to surface is a hit for the
+  // journal line and for the curated concepts that carried it (RETENTION.md).
+  const heatKeys = fresh.map((c) => `${c.file}:${lib.sha12(c.line)}`);
+  for (const g of groups) {
+    if (g.curated && fresh.some((c) => lib.groupMatchesLine(g, c.low, lib.lineStemSet(c.low)))) {
+      heatKeys.push(`glossary:${g.source}`);
+    }
+  }
+  lib.recordHeat(cwd, heatKeys);
+
   const budgetChars = (parseInt(process.env.CMO_JIT_BUDGET_TOKENS, 10) || 100) * 4;
   let msg =
     '[cmo recall hint] Project journal lines matching this prompt ' +

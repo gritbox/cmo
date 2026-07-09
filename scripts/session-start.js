@@ -53,13 +53,45 @@ lib.failOpen(() => {
       sections.push('## Working state from last session/compaction\n' + handoff);
     }
   }
-  if (!afterCompact && decisions) sections.push('## Durable project decisions\n' + decisions);
-  if (!afterCompact && index) sections.push('## Project memory index\n' + index);
+  // Value-ordered assembly, not a blind tail-cut. The old positional
+  // truncation cut whatever happened to sit at the tail — which, with
+  // decisions appended chronologically, meant the NEWEST decisions were
+  // dropped first. Under budget pressure the eviction order is now explicit:
+  // index goes first (least critical, one-line pointer left behind),
+  // decisions shed their OLDEST date-sections next (newest survive),
+  // and the handoff is tail-cut only as a last resort.
+  let truncated = false;
+  const remaining = () =>
+    budgetChars - sections.reduce((n, s) => n + s.length + 2, 0);
+
+  if (sections.length && sections[0].length > budgetChars) {
+    const cut = sections[0].lastIndexOf('\n', budgetChars);
+    sections[0] = sections[0].slice(0, cut > 0 ? cut : budgetChars);
+    truncated = true;
+  }
+
+  if (!afterCompact && decisions) {
+    const full = '## Durable project decisions\n' + decisions;
+    if (full.length <= remaining()) {
+      sections.push(full);
+    } else {
+      sections.push(trimDecisionsByAge(decisions, remaining()));
+      truncated = true;
+    }
+  }
+  if (!afterCompact && index) {
+    const full = '## Project memory index\n' + index;
+    if (full.length <= remaining()) {
+      sections.push(full);
+    } else {
+      sections.push('## Project memory index\n[omitted at budget — see .cmo/index.md]');
+      truncated = true;
+    }
+  }
 
   if (!sections.length) process.exit(0); // no memory yet — inject nothing, zero noise
 
   let body = sections.join('\n\n');
-  let truncated = false;
   if (body.length > budgetChars) {
     const cut = body.lastIndexOf('\n', budgetChars);
     body = body.slice(0, cut > 0 ? cut : budgetChars);
@@ -80,6 +112,30 @@ lib.failOpen(() => {
     },
   });
 });
+
+/**
+ * Fit decisions into `avail` chars by dropping whole `### YYYY-MM-DD`
+ * sections OLDEST-first (the file is appended chronologically, so the newest
+ * sections sit at the tail — exactly the ones a positional cut used to
+ * destroy). The preamble (title + any undated lines) is kept; a one-line
+ * pointer marks what was omitted. Age is the eviction order only because no
+ * better per-line value signal exists for an injected file — see RETENTION.md.
+ */
+function trimDecisionsByAge(decisions, avail) {
+  const header = '## Durable project decisions\n';
+  const omitted = '[older decisions omitted at budget — see .cmo/decisions.md]\n';
+  const parts = decisions.split(/(?=^### )/m);
+  const preamble = parts.length && !parts[0].startsWith('### ') ? parts.shift() : '';
+  const kept = [];
+  let used = header.length + preamble.length + omitted.length;
+  for (let i = parts.length - 1; i >= 0; i--) {
+    if (used + parts[i].length > avail) break;
+    used += parts[i].length;
+    kept.unshift(parts[i]);
+  }
+  const marker = kept.length < parts.length ? omitted : '';
+  return header + preamble + marker + kept.join('');
+}
 
 /**
  * Age of the handoff in hours, from the stamp snapshot.js writes on its first

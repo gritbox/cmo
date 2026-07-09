@@ -18,13 +18,19 @@ const MARKER = '[cmo: output trimmed';
 const SPILL_MAX_FILES = parseInt(process.env.CMO_SPILL_MAX, 10) || 50;
 
 lib.failOpen(() => {
+  const input = lib.readHookInput();
+  const cwd = input.cwd || process.cwd();
+
+  // Read-time heat for the pulled tiers: a model Read/Grep of a spill or
+  // journal file is direct evidence the buried content mattered. Recorded
+  // here because this hook already fires on exactly those tools.
+  recordMemoryAccess(input, cwd);
+
   const limit = process.env.CMO_TRIM_CHARS === undefined
     ? 30000
     : parseInt(process.env.CMO_TRIM_CHARS, 10) || 0;
   if (!limit) process.exit(0);
 
-  const input = lib.readHookInput();
-  const cwd = input.cwd || process.cwd();
   const resp = input.tool_response !== undefined ? input.tool_response : input.tool_output;
   if (resp === undefined || resp === null) process.exit(0);
 
@@ -134,19 +140,80 @@ function dedupLines(s) {
   return joined.length <= s.length * 0.75 ? joined : null;
 }
 
-/** Deterministic guardrail on our own files only: cap the spill dir size. */
+/** Record heat when the model Reads/Greps inside .cmo/ (spill, journal…). */
+function recordMemoryAccess(input, cwd) {
+  try {
+    if (input.tool_name !== 'Read' && input.tool_name !== 'Grep') return;
+    const target =
+      input.tool_input && (input.tool_input.file_path || input.tool_input.path);
+    if (typeof target !== 'string' || !target) return;
+    const memRoot = path.resolve(cwd, '.cmo');
+    if (!fs.existsSync(memRoot)) return;
+    const abs = path.resolve(cwd, target);
+    const rel = path.relative(memRoot, abs);
+    if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return;
+    if (rel === 'heat.json') return; // looking at the ledger is not a memory hit
+    lib.recordHeat(cwd, [`file:${rel.split(path.sep).join('/')}`]);
+  } catch {
+    /* heat is best-effort */
+  }
+}
+
+/**
+ * Deterministic guardrail on our own files only: cap the spill dir size.
+ * Eviction is cold-aware, not purely positional (RETENTION.md): spills the
+ * model actually came back to Read/Grep (heat `file:spill/<name>`) are
+ * skipped while anything unaccessed remains, and pruned only under a 2×
+ * hard cap. Every pruned file leaves one line in spill/tombstones.md, so a
+ * journal or handoff reference to it never dangles unexplained.
+ */
 function pruneSpill(dir) {
   try {
+    const cwd = path.resolve(dir, '..', '..');
+    const heat = lib.loadHeat(cwd);
+    const accessed = new Set(
+      Object.keys(heat.hits)
+        .filter((k) => k.startsWith('file:spill/'))
+        .map((k) => k.slice('file:spill/'.length))
+    );
     const files = fs
       .readdirSync(dir)
       .filter((f) => f.endsWith('.txt'))
       .map((f) => {
         const p = path.join(dir, f);
-        return { p, mtime: fs.statSync(p).mtimeMs };
+        return { f, p, mtime: fs.statSync(p).mtimeMs, size: fs.statSync(p).size };
       })
       .sort((a, b) => a.mtime - b.mtime);
-    for (const f of files.slice(0, Math.max(0, files.length - SPILL_MAX_FILES))) {
+
+    let excess = files.length - SPILL_MAX_FILES;
+    if (excess <= 0) return;
+    const victims = [];
+    for (const f of files) {
+      if (victims.length >= excess) break;
+      if (!accessed.has(f.f)) victims.push(f);
+    }
+    // Hard cap: if protecting accessed spills would let the dir grow without
+    // bound, evict oldest regardless past 2× the soft cap.
+    if (files.length - victims.length > SPILL_MAX_FILES * 2) {
+      for (const f of files) {
+        if (files.length - victims.length <= SPILL_MAX_FILES * 2) break;
+        if (!victims.includes(f)) victims.push(f);
+      }
+    }
+
+    const stones = [];
+    for (const f of victims) {
+      const firstLine = lib.oneLine(lib.readIfExists(f.p, 4096).split('\n')[0] || '', 60);
       fs.unlinkSync(f.p);
+      stones.push(
+        `- ${f.f} pruned ${new Date().toISOString().slice(0, 10)} (${f.size} bytes, began: "${firstLine}")`
+      );
+    }
+    if (stones.length) {
+      const tomb = path.join(dir, 'tombstones.md');
+      const existing = lib.readIfExists(tomb).split('\n').filter(Boolean);
+      const kept = existing.concat(stones).slice(-200);
+      fs.writeFileSync(tomb, kept.join('\n') + '\n');
     }
   } catch {
     /* best effort */
