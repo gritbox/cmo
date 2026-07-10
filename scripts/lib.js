@@ -298,9 +298,10 @@ function extractTerms(text) {
   return [...new Set(words.filter((w) => !STOPWORDS.has(w)))].slice(0, 16);
 }
 //
-// Deterministic recall expansion: light stemming plus an optional
-// project-curated glossary (.cmo/glossary.md). No embeddings, no
-// index build — the glossary is written at remember-time by the model (which
+// Deterministic recall expansion: light stemming plus optional
+// project-curated glossaries (.cmo/glossary.md, plus journey/glossary.md
+// when the project runs the Trolly pipeline). No embeddings, no index
+// build — glossary entries are written at remember-time by the model (which
 // knows the likely synonyms when it stores the fact) and consumed at
 // recall-time by plain string matching.
 
@@ -320,26 +321,79 @@ function stem(word) {
 }
 
 /**
- * Parse `.cmo/glossary.md` lines of the form
- *   `- head: alias, alias, multi word alias`
- * into [{ head, aliases }]. Everything is lowercased. Malformed lines are
- * skipped — the glossary is user-editable Markdown, not a schema.
+ * Glossary sources, in load order:
+ *   1. `.cmo/glossary.md` — CMO's own store
+ *   2. `journey/glossary.md` — the Trolly pipeline's canonical glossary,
+ *      auto-discovered when present (dir name overridable via
+ *      TROLLY_DIR_JOURNEY, mirroring Trolly's own config)
+ *   3. CMO_GLOSSARY_PATHS — comma-separated extra files for other layouts,
+ *      relative to the project root (absolute paths allowed)
+ * Reading the canonical file directly is what lets a companion plugin keep
+ * ONE glossary with no mirroring hook and no projection to drift.
+ */
+function glossarySources(cwd) {
+  const root = cwd || process.cwd();
+  const sources = [path.join(memoryDir(root), 'glossary.md')];
+  sources.push(path.join(root, process.env.TROLLY_DIR_JOURNEY || 'journey', 'glossary.md'));
+  for (const extra of (process.env.CMO_GLOSSARY_PATHS || '').split(',')) {
+    const p = extra.trim();
+    if (p) sources.push(path.isAbsolute(p) ? p : path.join(root, p));
+  }
+  return [...new Set(sources)];
+}
+
+/**
+ * Parse glossary lines from every source in either canonical shape:
+ *   `- head: alias, alias, multi word alias`                (CMO's own)
+ *   `- **head** — meaning *(aliases: a, b, c)*`             (Trolly's)
+ * into [{ head, aliases }]. Everything is lowercased; malformed or
+ * alias-less lines are skipped — glossaries are user-editable Markdown, not
+ * a schema. The Trolly shape is tried FIRST: a bold-head line whose meaning
+ * happens to contain a colon would otherwise false-parse under the CMO
+ * regex into a garbage head.
+ *
+ * Entries are deduplicated by head across sources (aliases unioned). This
+ * is load-bearing, not tidiness: termGroups() counts each entry as one
+ * concept group, so the same head loaded twice would let a single concept
+ * score as two matched groups — inflating the multi-concept precision bar
+ * that expansion is promised never to inflate.
  */
 function loadGlossary(cwd) {
-  const entries = [];
-  const raw = readIfExists(path.join(memoryDir(cwd), 'glossary.md'));
-  for (const line of raw.split('\n')) {
-    const m = line.match(/^\s*[-*]\s*([^:]{2,60}):\s*(.+)$/);
-    if (!m) continue;
-    const head = m[1].trim().toLowerCase();
-    const aliases = m[2]
-      .split(',')
-      .map((a) => a.trim().toLowerCase())
-      .filter((a) => a.length >= 2)
-      .slice(0, 8);
-    if (head && aliases.length) entries.push({ head, aliases });
+  const byHead = new Map();
+  for (const file of glossarySources(cwd)) {
+    const raw = readIfExists(file);
+    if (!raw) continue;
+    for (const line of raw.split('\n')) {
+      let head = '';
+      let aliasStr = '';
+      const trolly = line.match(/^\s*[-*]\s*\*\*(.+?)\*\*\s*[—–-]/);
+      if (trolly) {
+        const am = line.match(/\(aliases:\s*([^)]+)\)/i);
+        if (!am) continue;
+        head = trolly[1];
+        aliasStr = am[1];
+      } else {
+        const m = line.match(/^\s*[-*]\s*([^:]{2,60}):\s*(.+)$/);
+        if (!m) continue;
+        head = m[1];
+        aliasStr = m[2];
+      }
+      head = head.trim().toLowerCase();
+      const aliases = aliasStr
+        .split(',')
+        .map((a) => a.trim().toLowerCase())
+        .filter((a) => a.length >= 2)
+        .slice(0, 8);
+      if (!head || !aliases.length) continue;
+      const seen = byHead.get(head);
+      if (seen) {
+        for (const a of aliases) if (seen.size < 8) seen.add(a);
+      } else {
+        byHead.set(head, new Set(aliases));
+      }
+    }
   }
-  return entries;
+  return [...byHead.entries()].map(([head, aliases]) => ({ head, aliases: [...aliases] }));
 }
 
 /**
@@ -548,6 +602,7 @@ module.exports = {
   failOpen,
   stem,
   extractTerms,
+  glossarySources,
   loadGlossary,
   termGroups,
   groupMatchesLine,

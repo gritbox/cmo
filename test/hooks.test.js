@@ -528,6 +528,104 @@ test('search.js is silent (exit 0) when memory does not exist', () => {
   assert.equal(res.stdout, '');
 });
 
+// ------------------------------------- journey convergence (Trolly layout)
+
+function seedJourneyGlossary(proj) {
+  fs.mkdirSync(path.join(proj, 'journey'), { recursive: true });
+  fs.writeFileSync(
+    path.join(proj, 'journey', 'glossary.md'),
+    [
+      '# Glossary',
+      '- **floodgate** — the rate limiter *(aliases: throttling, request limits, backpressure)*',
+      '- **heat ledger** — read-time hits: stored in heat.json *(aliases: read tracking, hit counts)*',
+      '- **orphan** — a term with no aliases contributes no expansion',
+      '',
+    ].join('\n')
+  );
+}
+
+test('loadGlossary parses the Trolly shape and merges sources deduped by head', () => {
+  const proj = tmpProj();
+  seedGlossary(proj); // .cmo shape: floodgate: rate limiting, throttling, request limits
+  seedJourneyGlossary(proj);
+  const lib = require(path.join(SCRIPTS, 'lib.js'));
+  const g = lib.loadGlossary(proj);
+  const heads = g.map((e) => e.head);
+  // One concept group per head, even with the term in both files — a
+  // duplicate would let a single concept satisfy the two-group precision bar.
+  assert.equal(heads.filter((h) => h === 'floodgate').length, 1);
+  const fg = g.find((e) => e.head === 'floodgate');
+  assert.ok(fg.aliases.includes('rate limiting'), 'cmo-source alias kept');
+  assert.ok(fg.aliases.includes('backpressure'), 'journey-source alias unioned in');
+  // A colon inside the meaning must not false-parse under the CMO regex.
+  assert.ok(heads.includes('heat ledger'));
+  assert.ok(!heads.some((h) => h.includes('**')), 'no garbage bold heads');
+  assert.ok(!heads.includes('orphan'), 'alias-less lines are skipped');
+});
+
+test('jit-recall expands through the journey glossary with no derived copy', () => {
+  const proj = tmpProj();
+  seedJournal(proj);
+  seedJourneyGlossary(proj);
+  // "backpressure" appears only as a journey-glossary alias.
+  const r = run('jit-recall.js', jitInput(proj, 'is the backpressure handling too aggressive lately?'));
+  assert.match(r.out.hookSpecificOutput.additionalContext, /floodgate/);
+});
+
+test('search.js searches journey docs but never journey/archive', () => {
+  const proj = tmpProj();
+  fs.mkdirSync(path.join(proj, 'journey', 'specs'), { recursive: true });
+  fs.mkdirSync(path.join(proj, 'journey', 'archive'), { recursive: true });
+  fs.writeFileSync(
+    path.join(proj, 'journey', 'specs', '01-mvp.md'),
+    '- The zeppelin hydraulics manifold must vent within 2s.\n'
+  );
+  fs.writeFileSync(
+    path.join(proj, 'journey', 'archive', 'old-spec.md'),
+    '- The zeppelin hydraulics manifold must vent within 9s.\n'
+  );
+  const hits = runSearch(proj, 'zeppelin hydraulics manifold');
+  assert.ok(hits.some((h) => h.startsWith('journey/specs/01-mvp.md:')), 'journey doc surfaced');
+  assert.ok(!hits.some((h) => h.includes('archive')), 'superseded archive versions stay buried');
+});
+
+test('search.js quota keeps memory hits from being crowded out by journey docs', () => {
+  const proj = tmpProj();
+  fs.mkdirSync(memFile(proj, 'journal'), { recursive: true });
+  fs.writeFileSync(
+    memFile(proj, 'journal', '2026-06.md'),
+    '- Decided: zeppelin hydraulics pressure capped at 40psi.\n'
+  );
+  fs.mkdirSync(path.join(proj, 'journey'), { recursive: true });
+  fs.writeFileSync(
+    path.join(proj, 'journey', 'notes.md'),
+    [
+      '- zeppelin hydraulics manifold alpha section',
+      '- zeppelin hydraulics manifold beta section',
+      '- zeppelin hydraulics manifold gamma section',
+      '',
+    ].join('\n')
+  );
+  // Journey lines match 3 concepts, the journal line only 2 — a global top-2
+  // would be all journey. The quota reserves room for the memory hit.
+  const hits = runSearch(proj, '--top', '2', 'zeppelin hydraulics manifold');
+  assert.equal(hits.length, 2);
+  assert.ok(hits.some((h) => h.startsWith('journal/2026-06.md:')), 'memory hit survives');
+  assert.ok(hits.some((h) => h.startsWith('journey/notes.md:')), 'journey hit shown');
+});
+
+test('search.js records heat for memory hits only — journey is not CMO-governed', () => {
+  const proj = tmpProj();
+  seedJournal(proj);
+  fs.mkdirSync(path.join(proj, 'journey'), { recursive: true });
+  fs.writeFileSync(path.join(proj, 'journey', 'notes.md'), '- floodgate sliding windows rollout plan.\n');
+  runSearch(proj, 'floodgate', 'sliding', 'windows');
+  const heat = JSON.parse(fs.readFileSync(memFile(proj, 'heat.json'), 'utf8'));
+  const keys = Object.keys(heat.hits);
+  assert.ok(keys.some((k) => k.startsWith('journal/2026-06.md:')), 'memory line recorded');
+  assert.ok(!keys.some((k) => k.startsWith('journey/')), 'journey lines not recorded');
+});
+
 // ------------------------------------------------- approve-memory-writes
 
 const approveInput = (proj, tool, file) => ({
