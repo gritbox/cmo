@@ -10,11 +10,16 @@
 //
 // Recall breadth without embeddings, in order of application:
 //   - light stemming ("retries" finds "retry")
-//   - glossary expansion: .cmo/glossary.md maps a concept to its
-//     aliases ("neonhttp: http client, fetch wrapper"); aliases are written
-//     at remember-time by the model, which knows the synonyms when it stores
-//     the fact. All surface forms of one concept count as ONE matched term,
-//     so expansion never weakens the precision bar below.
+//   - glossary expansion: the project glossaries (.cmo/glossary.md, plus
+//     journey/glossary.md on Trolly projects — see lib.glossarySources) map
+//     a concept to its aliases ("neonhttp: http client, fetch wrapper");
+//     aliases are written at remember-time by the model, which knows the
+//     synonyms when it stores the fact. All surface forms of one concept
+//     count as ONE matched term, so expansion never weakens the precision
+//     bar below. The scanned corpus stays journal-only on purpose: the
+//     evidence bar is calibrated against terse digests, and prose-heavy
+//     journey docs would raise the false-pointer rate of an unsolicited
+//     hint (use /cmo:recall for the journey corpus).
 //   - vague-prompt fallback: a bare affirmation ("sure, go ahead") carries no
 //     terms of its own, so the terms are harvested from the assistant's last
 //     message in the transcript — the thing being agreed to.

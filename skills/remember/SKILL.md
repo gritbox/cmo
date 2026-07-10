@@ -33,7 +33,11 @@ conversation and state what you are saving before saving it.
 6. **Glossary (recall insurance).** Future sessions search memory by keyword,
    so a fact filed under one name is invisible to a query that uses a
    synonym. If the fact introduces a name or term of art (a library, a
-   subsystem, project jargon), append one line to
+   subsystem, project jargon), append one line to the project's canonical
+   glossary. On a Trolly-pipeline project (`journey/` exists) that is
+   `journey/glossary.md`, in its shape:
+   `- **term** — one-line meaning *(aliases: a, b, c)*` — CMO reads that
+   file directly, so never mirror terms into `.cmo/`. Otherwise append to
    `.cmo/glossary.md`:
    `- <term>: <2–4 aliases someone might search for instead>`
    e.g. `- neonhttp: http client, fetch wrapper, retries`. Write the aliases
@@ -49,9 +53,9 @@ conversation and state what you are saving before saving it.
    time and never injected, so its size costs no context — there is no term
    budget, and every deleted term is a deleted recall path. Consolidate only
    duplicate heads, dead terms, and aliases that have caused misfires
-   (see RETENTION.md). Never edit lines inside a
-   `<!-- trolly:derived -->` … `<!-- /trolly:derived -->` block — those are
-   machine-generated from `journey/glossary.md` by the Trolly plugin; fix
-   the term there instead.
+   (see RETENTION.md). If `.cmo/glossary.md` still contains a
+   `<!-- trolly:derived -->` … `<!-- /trolly:derived -->` block, it is a
+   leftover from before CMO read `journey/glossary.md` directly — delete
+   the whole block (the canonical terms live in `journey/glossary.md`).
 
 Confirm to the user in one line what was written and where.
